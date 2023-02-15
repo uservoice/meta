@@ -1,6 +1,7 @@
 package meta
 
 import (
+	"bytes"
 	"database/sql/driver"
 	"encoding/json"
 	"reflect"
@@ -172,4 +173,19 @@ func (i Float64) MarshalJSON() ([]byte, error) {
 		return MetaJson.Marshal(i.Val)
 	}
 	return nullString, nil
+}
+
+func (i *Float64) UnmarshalJSON(bs []byte) error {
+	if bytes.Equal(nullString, bs) {
+		i.Nullity = Nullity{true}
+		return nil
+	}
+
+	err := MetaJson.Unmarshal(bs, &i.Val)
+	if err != nil {
+		return err
+	}
+	i.Presence = Presence{true}
+	i.Nullity = Nullity{false}
+	return nil
 }
