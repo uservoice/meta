@@ -138,3 +138,13 @@ func (s StringSlice) MarshalJSON() ([]byte, error) {
 	}
 	return nullString, nil
 }
+
+func (s *StringSlice) UnmarshalJSON(data []byte) error {
+	var value []string
+	err := MetaJson.Unmarshal(data, &value)
+	if err != nil {
+		return err
+	}
+	*s = StringSlice{Val: value}
+	return nil
+}

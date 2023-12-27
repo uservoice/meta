@@ -116,3 +116,13 @@ func (s Int64Slice) MarshalJSON() ([]byte, error) {
 	}
 	return nullString, nil
 }
+
+func (s *Int64Slice) UnmarshalJSON(data []byte) error {
+	var value []int64
+	err := MetaJson.Unmarshal(data, &value)
+	if err != nil {
+		return err
+	}
+	*s = Int64Slice{Val: value}
+	return nil
+}
