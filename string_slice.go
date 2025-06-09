@@ -29,13 +29,9 @@ func (i *StringSlice) ParseOptions(tag reflect.StructTag) interface{} {
 		stringOpts.Blank = false
 	}
 
-	sliceOpts := ParseSliceOptions(tag)
-	// discard empty slices by default
-	sliceOpts.DiscardBlank = tag.Get("meta_discard_blank") != "false"
-
 	return &StringSliceOptions{
 		StringOptions: stringOpts,
-		SliceOptions:  sliceOpts,
+		SliceOptions:  ParseSliceOptions(tag),
 	}
 }
 

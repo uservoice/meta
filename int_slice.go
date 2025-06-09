@@ -25,13 +25,9 @@ func (i *Int64Slice) ParseOptions(tag reflect.StructTag) interface{} {
 	var tempI Int64
 	opts := tempI.ParseOptions(tag)
 
-	sliceOpts := ParseSliceOptions(tag)
-	// discard empty slices by default
-	sliceOpts.DiscardBlank = tag.Get("meta_discard_blank") != "false"
-
 	return &IntSliceOptions{
 		IntOptions:   opts.(*IntOptions),
-		SliceOptions: sliceOpts,
+		SliceOptions: ParseSliceOptions(tag),
 	}
 }
 

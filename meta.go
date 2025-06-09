@@ -51,7 +51,7 @@ func ParseSliceOptions(tag reflect.StructTag) *SliceOptions {
 	sliceOpts.Required = tag.Get("meta_required") == "true"
 	sliceOpts.Blank = tag.Get("meta_blank") == "true"
 	sliceOpts.Null = tag.Get("meta_null") == "true"
-	sliceOpts.DiscardBlank = tag.Get("meta_discard_blank") == "true"
+	sliceOpts.DiscardBlank = tag.Get("meta_discard_blank") != "false"
 
 	if minLengthString := tag.Get("meta_min_length"); minLengthString != "" {
 		minLength, err := strconv.ParseInt(minLengthString, 10, 0)
