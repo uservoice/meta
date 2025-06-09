@@ -197,47 +197,47 @@ func TestSliceOfHashesLength(t *testing.T) {
 	type withRequiredSliceOfHashes struct {
 		A []struct {
 			Z String
-		} `meta_min_length:"2" meta_max_length:"4"`
+		} `meta_min_length:"2" meta_max_length:"4" meta_required:"true"`
 	}
 
 	withRequiredSliceOfHashesDecoder := NewDecoder(&withRequiredSliceOfHashes{})
 
-	// // Valid length
-	// inputs := withRequiredSliceOfHashes{}
-	// e := withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{
-	// 	"a.0.z": {"A"},
-	// 	"a.1.z": {"B"},
-	// 	"a.2.z": {"C"},
-	// })
-	// assertEqual(t, e, ErrorHash(nil))
-
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
-	// 	"a": [
-	// 		{"z": "A"},
-	// 		{"z": "B"},
-	// 		{"z": "C"}
-	// 	]
-	// }`))
-	// assertEqual(t, e, ErrorHash(nil))
-
-	// // Too short
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{
-	// 	"a.0.z": {"A"},
-	// })
-	// assertEqual(t, e, ErrorHash{"a": ErrMinLength})
-
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
-	// 	"a": [
-	// 		{"z": "A"}
-	// 	]
-	// }`))
-	// assertEqual(t, e, ErrorHash{"a": ErrMinLength})
-
+	// Valid length
 	inputs := withRequiredSliceOfHashes{}
-	e := withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
+	e := withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{
+		"a.0.z": {"A"},
+		"a.1.z": {"B"},
+		"a.2.z": {"C"},
+	})
+	assertEqual(t, e, ErrorHash(nil))
+
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
+		"a": [
+			{"z": "A"},
+			{"z": "B"},
+			{"z": "C"}
+		]
+	}`))
+	assertEqual(t, e, ErrorHash(nil))
+
+	// Too short
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{
+		"a.0.z": {"A"},
+	})
+	assertEqual(t, e, ErrorHash{"a": ErrMinLength})
+
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
+		"a": [
+			{"z": "A"}
+		]
+	}`))
+	assertEqual(t, e, ErrorHash{"a": ErrMinLength})
+
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
 		"a": [
 			{"z": "A"},
 		]
@@ -245,34 +245,34 @@ func TestSliceOfHashesLength(t *testing.T) {
 	assertEqual(t, e, ErrorHash{"error": ErrMalformed})
 
 	// Too short
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{})
-	// assertEqual(t, e, ErrorHash{"a": ErrMinLength})
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{})
+	assertEqual(t, e, ErrorHash{"a": ErrRequired})
 
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{}`))
-	// assertEqual(t, e, ErrorHash{"a": ErrMinLength})
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{}`))
+	assertEqual(t, e, ErrorHash{"a": ErrRequired})
 
-	// // Too long
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{
-	// 	"a.0.z": {"A"},
-	// 	"a.1.z": {"B"},
-	// 	"a.2.z": {"C"},
-	// 	"a.3.z": {"D"},
-	// 	"a.4.z": {"E"},
-	// })
-	// assertEqual(t, e, ErrorHash{"a": ErrMaxLength})
+	// Too long
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{
+		"a.0.z": {"A"},
+		"a.1.z": {"B"},
+		"a.2.z": {"C"},
+		"a.3.z": {"D"},
+		"a.4.z": {"E"},
+	})
+	assertEqual(t, e, ErrorHash{"a": ErrMaxLength})
 
-	// inputs = withRequiredSliceOfHashes{}
-	// e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
-	// 	"a": [
-	// 		{"z": "A"},
-	// 		{"z": "B"},
-	// 		{"z": "C"},
-	// 		{"z": "D"},
-	// 		{"z": "E"}
-	// 	]
-	// }`))
-	// assertEqual(t, e, ErrorHash{"a": ErrMaxLength})
+	inputs = withRequiredSliceOfHashes{}
+	e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{
+		"a": [
+			{"z": "A"},
+			{"z": "B"},
+			{"z": "C"},
+			{"z": "D"},
+			{"z": "E"}
+		]
+	}`))
+	assertEqual(t, e, ErrorHash{"a": ErrMaxLength})
 }
