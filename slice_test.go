@@ -84,8 +84,8 @@ func TestSliceStringNoItems(t *testing.T) {
 // keep blanks and nulls
 func TestSliceStringNoItems_KeepBlanks(t *testing.T) {
 	var inputs struct {
-		A []String  `meta_blank:"true"`
-		B []*String `meta_blank:"true"`
+		A []String  `meta_blank:"true" meta_discard_blank:"false"`
+		B []*String `meta_blank:"true" meta_discard_blank:"false"`
 	}
 	decoder := NewDecoder(&inputs)
 	e := decoder.DecodeValues(&inputs, url.Values{})
