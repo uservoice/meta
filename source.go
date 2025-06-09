@@ -137,11 +137,11 @@ type jsonSource struct {
 }
 
 func (jv *jsonSource) Null() bool {
-	return jv.RawMessage == nil || string(jv.RawMessage) == "null"
+	return string(jv.RawMessage) == "null"
 }
 
 func (jv *jsonSource) Empty() bool {
-	return len(jv.RawMessage) == 0
+	return false
 }
 
 func (jv *jsonSource) Malformed() bool {
@@ -267,7 +267,7 @@ type mapSource struct {
 }
 
 func (s *mapSource) Null() bool {
-	return s.value == nil
+	return false
 }
 
 func (s *mapSource) Empty() bool {
@@ -326,13 +326,11 @@ type sliceSource struct {
 }
 
 func (s *sliceSource) Null() bool {
-	return s.value == nil
+	return false
 }
 
 func (s *sliceSource) Empty() bool {
-	// slice source is empty if it is nil
-	// but not if it is an empty slice
-	return s.value == nil
+	return false
 }
 
 func (s *sliceSource) Get(key string) source {
@@ -444,7 +442,7 @@ func (s *emptySource) Value(interface{}) Errorable {
 }
 
 func (s *emptySource) Null() bool {
-	return true
+	return false
 }
 
 func (s *emptySource) Empty() bool {

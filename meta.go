@@ -367,7 +367,7 @@ func (d *Decoder) decode(destValue reflect.Value, src source) ErrorHash {
 			sliceValue := fieldValue
 			var errorsInSlice ErrorSlice
 			// if it is an instance of emptySource, the key didn't exist
-			if _, ok := sliceSrc.(*emptySource); ok {
+			if sliceSrc.Empty() {
 				if dfield.Required {
 					errs = addError(errs, metaName, ErrRequired)
 				}
@@ -380,21 +380,17 @@ func (d *Decoder) decode(destValue reflect.Value, src source) ErrorHash {
 				}
 			}
 
-			if sliceSrc.Empty() || sliceSrc.Null() {
-				if dfield.SliceOptions.DiscardBlank {
+			if sliceSrc.Null() {
+				if dfield.SliceOptions.DiscardBlank || (dfield.SliceOptions.Null && sliceSrc.Null()) {
+					// initialize the value as the zero value of the field type
 					fieldValue.Set(reflect.Zero(dfield.fieldType))
-				} else if dfield.SliceOptions.Null && sliceSrc.Null() {
-					fieldValue.Set(reflect.Zero(dfield.fieldType))
-				} else if dfield.SliceOptions.Blank && sliceSrc.Empty() {
-					// set to empty slice rather than nil slice
-					fieldValue.Set(reflect.MakeSlice(dfield.fieldType, 0, 0))
-				} else {
-					errs = addError(errs, metaName, ErrBlank)
+					continue
 				}
+				errs = addError(errs, metaName, ErrBlank)
 				continue
 			}
 
-			// initialize the slice to an empty slice
+			// initialize the slice to an empty slice rather than the zero value
 			sliceValue.Set(reflect.MakeSlice(dfield.fieldType, 0, 0))
 
 			for i := 0; true; i += 1 {
