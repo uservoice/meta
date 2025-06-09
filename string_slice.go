@@ -7,6 +7,8 @@ import (
 )
 
 type StringSlice struct {
+	Presence
+	Nullity
 	Val  []string
 	Path string
 }
@@ -34,9 +36,23 @@ func (i *StringSlice) ParseOptions(tag reflect.StructTag) interface{} {
 }
 
 func (n *StringSlice) JSONValue(path string, i interface{}, options interface{}) Errorable {
+	opts := options.(*StringSliceOptions)
+	stringOpts := opts.StringOptions
+	sliceOpts := opts.SliceOptions
+
 	n.Path = path
 	n.Val = nil
+	n.Present = true
+	n.Null = false
+
 	if i == nil {
+		n.Null = true
+		if sliceOpts.DiscardBlank {
+			n.Present = false
+			return nil
+		} else if sliceOpts.Null {
+			return nil
+		}
 		return ErrBlank
 	}
 
@@ -45,12 +61,7 @@ func (n *StringSlice) JSONValue(path string, i interface{}, options interface{})
 	case string:
 		return n.FormValue(value, options)
 	case []interface{}:
-		if len(value) == 0 {
-			return ErrBlank
-		}
-		opts := options.(*StringSliceOptions)
-		stringOpts := opts.StringOptions
-		sliceOpts := opts.SliceOptions
+		n.Val = []string{}
 
 		if sliceOpts.MinLengthPresent && len(value) < sliceOpts.MinLength {
 			return ErrMinLength
@@ -60,15 +71,25 @@ func (n *StringSlice) JSONValue(path string, i interface{}, options interface{})
 			return ErrMaxLength
 		}
 
+		if len(value) == 0 {
+			if sliceOpts.DiscardBlank {
+				n.Present = false
+				return nil
+			} else if sliceOpts.Blank {
+				return nil
+			}
+			return ErrBlank
+		}
+
 		for _, v := range value {
 			var s String
 			if err := s.JSONValue("", v, stringOpts); err != nil {
 				errorsInSlice = append(errorsInSlice, err)
-				if err == ErrBlank && !opts.DiscardBlank {
+				if err == ErrBlank && !stringOpts.DiscardBlank {
 					n.Val = append(n.Val, s.Val)
 				}
 			} else {
-				if !opts.DiscardBlank || s.Val != "" {
+				if !stringOpts.DiscardBlank || s.Val != "" {
 					errorsInSlice = append(errorsInSlice, nil)
 					n.Val = append(n.Val, s.Val)
 				}
@@ -76,6 +97,24 @@ func (n *StringSlice) JSONValue(path string, i interface{}, options interface{})
 		}
 		if errorsInSlice.Len() > 0 {
 			return errorsInSlice
+		}
+
+		if sliceOpts.MinLengthPresent && len(n.Val) < sliceOpts.MinLength {
+			return ErrMinLength
+		}
+
+		if sliceOpts.MaxLengthPresent && len(n.Val) > sliceOpts.MaxLength {
+			return ErrMaxLength
+		}
+
+		if len(n.Val) == 0 {
+			if sliceOpts.DiscardBlank {
+				n.Present = false
+				return nil
+			} else if sliceOpts.Blank {
+				return nil
+			}
+			return ErrBlank
 		}
 	}
 	return nil
@@ -87,16 +126,29 @@ func (i *StringSlice) FormValue(value string, options interface{}) Errorable {
 		return ErrUtf8
 	}
 
-	if value == "" {
-		return ErrBlank
-	}
-
-	var tempS String
+	i.Val = []string{}
+	i.Present = true
+	i.Null = false
 
 	opts := options.(*StringSliceOptions)
 	stringOpts := opts.StringOptions
 	sliceOpts := opts.SliceOptions
 
+	if sliceOpts.Strip {
+		value = strings.TrimSpace(value)
+	}
+
+	if value == "" {
+		if sliceOpts.DiscardBlank {
+			i.Present = false
+			return nil
+		} else if sliceOpts.Blank {
+			return nil
+		}
+		return ErrBlank
+	}
+
+	var tempS String
 	strs := strings.Split(value, ",")
 
 	if sliceOpts.MinLengthPresent && len(strs) < sliceOpts.MinLength {
@@ -114,11 +166,11 @@ func (i *StringSlice) FormValue(value string, options interface{}) Errorable {
 
 		if err := tempS.FormValue(s, stringOpts); err != nil {
 			errorsInSlice = append(errorsInSlice, err)
-			if err == ErrBlank && !opts.DiscardBlank {
+			if err == ErrBlank && !stringOpts.DiscardBlank {
 				i.Val = append(i.Val, tempS.Val)
 			}
 		} else {
-			if !opts.DiscardBlank || tempS.Val != "" {
+			if !stringOpts.DiscardBlank || tempS.Val != "" {
 				errorsInSlice = append(errorsInSlice, nil)
 				i.Val = append(i.Val, tempS.Val)
 			}
@@ -127,6 +179,24 @@ func (i *StringSlice) FormValue(value string, options interface{}) Errorable {
 
 	if errorsInSlice.Len() > 0 {
 		return errorsInSlice
+	}
+
+	if sliceOpts.MinLengthPresent && len(i.Val) < sliceOpts.MinLength {
+		return ErrMinLength
+	}
+
+	if sliceOpts.MaxLengthPresent && len(i.Val) > sliceOpts.MaxLength {
+		return ErrMaxLength
+	}
+
+	if len(i.Val) == 0 {
+		if sliceOpts.DiscardBlank {
+			i.Present = false
+			return nil
+		} else if sliceOpts.Blank {
+			return nil
+		}
+		return ErrBlank
 	}
 
 	return nil

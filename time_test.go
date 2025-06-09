@@ -324,6 +324,6 @@ func TestTimeExpressions(t *testing.T) {
 		after := time.Now()
 		assertEqual(t, e, ErrorHash(nil))
 		assertEqual(t, inputs.A.Present, true)
-		assertion(inputs.A.Val, before, after)
+		assertion(inputs.A.Val.UTC(), before.UTC(), after.UTC())
 	}
 }

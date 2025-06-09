@@ -14,6 +14,7 @@ type source interface {
 	// If the value is not present, the pointer will be nil.
 	Value(interface{}) Errorable
 	Empty() bool
+	Null() bool
 	ValueMap() map[string]interface{}
 	// Malformed source must return ErrMalformed when Value is called.
 	// It should be set by the parent source.
@@ -30,7 +31,23 @@ type source interface {
 type mergedSource []source
 
 func newMergedSource(src ...source) source {
-	return mergedSource(src)
+	if len(src) == 0 {
+		return &emptySource{}
+	}
+	sources := make([]source, 0, len(src))
+	for _, s := range src {
+		// check if instance of emptySource
+		if _, ok := s.(*emptySource); !ok {
+			sources = append(sources, s)
+		}
+	}
+	if len(sources) == 0 {
+		return &emptySource{}
+	}
+	if len(sources) == 1 {
+		return sources[0]
+	}
+	return mergedSource(sources)
 }
 
 func (s mergedSource) Get(key string) source {
@@ -39,6 +56,15 @@ func (s mergedSource) Get(key string) source {
 		src = append(src, m.Get(key))
 	}
 	return newMergedSource(src...)
+}
+
+func (s mergedSource) Null() bool {
+	for _, m := range s {
+		if !m.Null() {
+			return false
+		}
+	}
+	return true
 }
 
 func (s mergedSource) Empty() bool {
@@ -110,6 +136,10 @@ type jsonSource struct {
 	path      string
 }
 
+func (jv *jsonSource) Null() bool {
+	return jv.RawMessage == nil || string(jv.RawMessage) == "null"
+}
+
 func (jv *jsonSource) Empty() bool {
 	return len(jv.RawMessage) == 0
 }
@@ -125,13 +155,16 @@ func (jv *jsonSource) Get(key string) source {
 	} else {
 		path = jv.path + "." + key
 	}
+
+	if len(jv.RawMessage) == 0 {
+		return &emptySource{}
+	}
+
 	s := &jsonSource{
 		malformed: jv.malformed,
 		path:      path,
 	}
-	if len(jv.RawMessage) == 0 {
-		return s
-	}
+
 	// numeric key implies array
 	i, err := strconv.Atoi(key)
 	if err == nil {
@@ -142,7 +175,7 @@ func (jv *jsonSource) Get(key string) source {
 			return s
 		}
 		if i >= len(slice) {
-			return s
+			return &emptySource{}
 		}
 		s.RawMessage = slice[i]
 		return s
@@ -153,9 +186,10 @@ func (jv *jsonSource) Get(key string) source {
 		s.malformed = true
 		return s
 	}
+
 	raw, ok := m[key]
 	if !ok {
-		return s
+		return &emptySource{}
 	}
 	s.RawMessage = raw
 	return s
@@ -232,6 +266,10 @@ type mapSource struct {
 	path  string
 }
 
+func (s *mapSource) Null() bool {
+	return s.value == nil
+}
+
 func (s *mapSource) Empty() bool {
 	return false
 }
@@ -287,8 +325,14 @@ type sliceSource struct {
 	malformed bool
 }
 
+func (s *sliceSource) Null() bool {
+	return s.value == nil
+}
+
 func (s *sliceSource) Empty() bool {
-	return len(s.value) == 0
+	// slice source is empty if it is nil
+	// but not if it is an empty slice
+	return s.value == nil
 }
 
 func (s *sliceSource) Get(key string) source {
@@ -365,6 +409,10 @@ func (s *valueSource) Value(i interface{}) Errorable {
 	return nil
 }
 
+func (s *valueSource) Null() bool {
+	return s.value == nil
+}
+
 func (s *valueSource) Empty() bool {
 	return false
 }
@@ -393,6 +441,10 @@ func (s *emptySource) Get(key string) source {
 
 func (s *emptySource) Value(interface{}) Errorable {
 	return nil
+}
+
+func (s *emptySource) Null() bool {
+	return true
 }
 
 func (s *emptySource) Empty() bool {

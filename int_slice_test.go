@@ -43,7 +43,7 @@ func TestIntSliceSuccess(t *testing.T) {
 	assertEqual(t, inputs.A.Val, []int64{-2, 9})
 }
 
-func TestIntSliceBlank(t *testing.T) {
+func TestIntSliceDefaultBlankAndNull(t *testing.T) {
 	var inputs withIntSlice
 
 	e := withIntSliceDecoder.DecodeValues(&inputs, url.Values{"a": {""}})
@@ -57,6 +57,66 @@ func TestIntSliceBlank(t *testing.T) {
 
 	e = withIntSliceDecoder.DecodeJSON(&inputs, []byte(`{"a":[]}`))
 	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+}
+
+func TestIntSliceDiscardBlank(t *testing.T) {
+	var inputs struct {
+		A Int64Slice `meta_discard_blank:"true"`
+	}
+	decoder := NewDecoder(&inputs)
+
+	e := decoder.DecodeValues(&inputs, url.Values{"a": {""}})
+	assertEqual(t, e, ErrorHash(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":""}`))
+	assertEqual(t, e, ErrorHash(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":null}`))
+	assertEqual(t, e, ErrorHash(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":[]}`))
+	assertEqual(t, e, ErrorHash(nil))
+}
+
+func TestIntSliceNull(t *testing.T) {
+	var inputs struct {
+		A Int64Slice `meta_null:"true"`
+	}
+	decoder := NewDecoder(&inputs)
+
+	e := decoder.DecodeValues(&inputs, url.Values{"a": {""}})
+	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":""}`))
+	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":null}`))
+	assertEqual(t, e, ErrorHash(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":[]}`))
+	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+}
+
+func TestIntSliceBlank(t *testing.T) {
+	var inputs struct {
+		A Int64Slice `meta_blank:"true"`
+	}
+	decoder := NewDecoder(&inputs)
+
+	e := decoder.DecodeValues(&inputs, url.Values{"a": {""}})
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, inputs.A.Val, []int64{})
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":""}`))
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, inputs.A.Val, []int64{})
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":null}`))
+	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":[]}`))
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, inputs.A.Val, []int64{})
 }
 
 func TestIntSliceInvalid(t *testing.T) {

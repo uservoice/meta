@@ -10,6 +10,8 @@ import (
 //
 
 type Int64Slice struct {
+	Presence
+	Nullity
 	Val  []int64
 	Path string
 }
@@ -29,9 +31,23 @@ func (i *Int64Slice) ParseOptions(tag reflect.StructTag) interface{} {
 }
 
 func (n *Int64Slice) JSONValue(path string, i interface{}, options interface{}) Errorable {
+	opts := options.(*IntSliceOptions)
+	intOpts := opts.IntOptions
+	sliceOpts := opts.SliceOptions
+
 	n.Path = path
 	n.Val = nil
+	n.Present = true
+	n.Null = false
+
 	if i == nil {
+		n.Null = true
+		if sliceOpts.DiscardBlank {
+			n.Present = false
+			return nil
+		} else if sliceOpts.Null {
+			return nil
+		}
 		return ErrBlank
 	}
 
@@ -40,12 +56,7 @@ func (n *Int64Slice) JSONValue(path string, i interface{}, options interface{}) 
 	case string:
 		return n.FormValue(value, options)
 	case []interface{}:
-		if len(value) == 0 {
-			return ErrBlank
-		}
-		opts := options.(*IntSliceOptions)
-		intOpts := opts.IntOptions
-		sliceOpts := opts.SliceOptions
+		n.Val = []int64{}
 
 		if sliceOpts.MinLengthPresent && len(value) < sliceOpts.MinLength {
 			return ErrMinLength
@@ -53,6 +64,16 @@ func (n *Int64Slice) JSONValue(path string, i interface{}, options interface{}) 
 
 		if sliceOpts.MaxLengthPresent && len(value) > sliceOpts.MaxLength {
 			return ErrMaxLength
+		}
+
+		if len(value) == 0 {
+			if sliceOpts.DiscardBlank {
+				n.Present = false
+				return nil
+			} else if sliceOpts.Blank {
+				return nil
+			}
+			return ErrBlank
 		}
 
 		for _, v := range value {
@@ -67,20 +88,50 @@ func (n *Int64Slice) JSONValue(path string, i interface{}, options interface{}) 
 		if errorsInSlice.Len() > 0 {
 			return errorsInSlice
 		}
+
+		if sliceOpts.MinLengthPresent && len(n.Val) < sliceOpts.MinLength {
+			return ErrMinLength
+		}
+
+		if sliceOpts.MaxLengthPresent && len(n.Val) > sliceOpts.MaxLength {
+			return ErrMaxLength
+		}
+
+		if len(n.Val) == 0 {
+			if sliceOpts.DiscardBlank {
+				n.Present = false
+				return nil
+			} else if sliceOpts.Blank {
+				return nil
+			}
+			return ErrBlank
+		}
 	}
 	return nil
 }
 
 func (i *Int64Slice) FormValue(value string, options interface{}) Errorable {
-	if value == "" {
-		return ErrBlank
-	}
-
 	var tempI Int64
 
 	opts := options.(*IntSliceOptions)
 	intOpts := opts.IntOptions
 	sliceOpts := opts.SliceOptions
+
+	i.Val = []int64{}
+	i.Present = true
+	i.Null = false
+
+	value = strings.TrimSpace(value)
+
+	if value == "" {
+		if sliceOpts.DiscardBlank {
+			i.Present = false
+			return nil
+		} else if sliceOpts.Blank {
+			return nil
+		}
+		return ErrBlank
+	}
 
 	strs := strings.Split(value, ",")
 
@@ -105,6 +156,24 @@ func (i *Int64Slice) FormValue(value string, options interface{}) Errorable {
 
 	if errorsInSlice.Len() > 0 {
 		return errorsInSlice
+	}
+
+	if sliceOpts.MinLengthPresent && len(i.Val) < sliceOpts.MinLength {
+		return ErrMinLength
+	}
+
+	if sliceOpts.MaxLengthPresent && len(i.Val) > sliceOpts.MaxLength {
+		return ErrMaxLength
+	}
+
+	if len(i.Val) == 0 {
+		if sliceOpts.DiscardBlank {
+			i.Present = false
+			return nil
+		} else if sliceOpts.Blank {
+			return nil
+		}
+		return ErrBlank
 	}
 
 	return nil
