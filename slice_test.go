@@ -60,14 +60,55 @@ func TestSliceStringSuccessMultiSource(t *testing.T) {
 
 // by default, if no items are present, then the slice will be set to nil
 func TestSliceStringNoItems(t *testing.T) {
-	var inputs withSliceString
-	e := withSliceStringDecoder.DecodeValues(&inputs, url.Values{})
+	var inputs struct {
+		A []String
+		B []*String
+	}
+	decoder := NewDecoder(&inputs)
+	e := decoder.DecodeValues(&inputs, url.Values{})
 
 	assertEqual(t, e, ErrorHash(nil))
 	assertEqual(t, len(inputs.A), 0)
 	assertEqual(t, len(inputs.B), 0)
 	assertEqual(t, inputs.A, []String(nil))
 	assertEqual(t, inputs.B, []*String(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{}`))
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, len(inputs.A), 0)
+	assertEqual(t, len(inputs.B), 0)
+	assertEqual(t, inputs.A, []String(nil))
+	assertEqual(t, inputs.B, []*String(nil))
+}
+
+// keep blanks and nulls
+func TestSliceStringNoItems_KeepBlanks(t *testing.T) {
+	var inputs struct {
+		A []String  `meta_blank:"true" meta_discard_blank:"false"`
+		B []*String `meta_blank:"true" meta_discard_blank:"false"`
+	}
+	decoder := NewDecoder(&inputs)
+	e := decoder.DecodeValues(&inputs, url.Values{})
+
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, len(inputs.A), 0)
+	assertEqual(t, len(inputs.B), 0)
+	assertEqual(t, inputs.A, []String(nil))
+	assertEqual(t, inputs.B, []*String(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{}`))
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, len(inputs.A), 0)
+	assertEqual(t, len(inputs.B), 0)
+	assertEqual(t, inputs.A, []String(nil))
+	assertEqual(t, inputs.B, []*String(nil))
+
+	e = decoder.DecodeJSON(&inputs, []byte(`{"a":[], "b":[]}`))
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, len(inputs.A), 0)
+	assertEqual(t, len(inputs.B), 0)
+	assertEqual(t, inputs.A, []String{})
+	assertEqual(t, inputs.B, []*String{})
 }
 
 // TODO: make a test where it's a []OptionalString, and pass in blank values. Should they be included in the array?
@@ -156,7 +197,7 @@ func TestSliceOfHashesLength(t *testing.T) {
 	type withRequiredSliceOfHashes struct {
 		A []struct {
 			Z String
-		} `meta_min_length:"2" meta_max_length:"4"`
+		} `meta_min_length:"2" meta_max_length:"4" meta_required:"true"`
 	}
 
 	withRequiredSliceOfHashesDecoder := NewDecoder(&withRequiredSliceOfHashes{})
@@ -206,11 +247,11 @@ func TestSliceOfHashesLength(t *testing.T) {
 	// Too short
 	inputs = withRequiredSliceOfHashes{}
 	e = withRequiredSliceOfHashesDecoder.DecodeValues(&inputs, url.Values{})
-	assertEqual(t, e, ErrorHash{"a": ErrMinLength})
+	assertEqual(t, e, ErrorHash{"a": ErrRequired})
 
 	inputs = withRequiredSliceOfHashes{}
 	e = withRequiredSliceOfHashesDecoder.DecodeJSON(&inputs, []byte(`{}`))
-	assertEqual(t, e, ErrorHash{"a": ErrMinLength})
+	assertEqual(t, e, ErrorHash{"a": ErrRequired})
 
 	// Too long
 	inputs = withRequiredSliceOfHashes{}

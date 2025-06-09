@@ -3,10 +3,10 @@ package meta
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 type Valuer interface {
@@ -35,6 +35,11 @@ const (
 var nullString = []byte("null")
 
 type SliceOptions struct {
+	Required         bool
+	Strip            bool
+	DiscardBlank     bool
+	Blank            bool
+	Null             bool
 	MinLengthPresent bool
 	MinLength        int
 	MaxLengthPresent bool
@@ -43,6 +48,10 @@ type SliceOptions struct {
 
 func ParseSliceOptions(tag reflect.StructTag) *SliceOptions {
 	sliceOpts := &SliceOptions{}
+	sliceOpts.Required = tag.Get("meta_required") == "true"
+	sliceOpts.Blank = tag.Get("meta_blank") == "true"
+	sliceOpts.Null = tag.Get("meta_null") == "true"
+	sliceOpts.DiscardBlank = tag.Get("meta_discard_blank") != "false"
 
 	if minLengthString := tag.Get("meta_min_length"); minLengthString != "" {
 		minLength, err := strconv.ParseInt(minLengthString, 10, 0)
@@ -224,9 +233,11 @@ func NewDecoderWithOptions(destStruct interface{}, options DecoderOptions) *Deco
 				// Set slice validation options
 				dfield.SliceOptions = ParseSliceOptions(fieldStruct.Tag)
 
-				if reflect.PtrTo(elemIndirectedType).Implements(reflectTypeValuer) {
+				if reflect.PointerTo(elemIndirectedType).Implements(reflectTypeValuer) {
 					dfield.fieldCategory = categorySliceOfValues
 					valuer := reflect.New(elemIndirectedType).Interface().(Valuer) // Make a new object so we can use it to parse values.
+					// replace meta_element_* tags with meta_* tags
+					fieldStruct.Tag = reflect.StructTag(strings.ReplaceAll(string(fieldStruct.Tag), "meta_element_", "meta_"))
 					dfield.Options = getParsedOptions(valuer, fieldStruct, options)
 				} else if elemIndirectedKind == reflect.Struct {
 					dfield.fieldCategory = categorySliceOfStructs
@@ -351,11 +362,37 @@ func (d *Decoder) decode(destValue reflect.Value, src source) ErrorHash {
 			} else if dfield.Required {
 				errs = addError(errs, metaName, ErrRequired)
 			}
-		case categorySliceOfValues:
+		case categorySliceOfValues, categorySliceOfStructs:
+			sliceSrc := src.Get(metaName)
 			sliceValue := fieldValue
 			var errorsInSlice ErrorSlice
+			// if it is an instance of emptySource, the key didn't exist
+			if sliceSrc.Empty() {
+				if dfield.Required {
+					errs = addError(errs, metaName, ErrRequired)
+				}
+				continue
+			}
 
-			sliceSrc := src.Get(metaName)
+			if sliceSrc.Malformed() {
+				return ErrorHash{
+					"error": ErrMalformed,
+				}
+			}
+
+			if sliceSrc.Null() {
+				if dfield.SliceOptions.DiscardBlank || (dfield.SliceOptions.Null && sliceSrc.Null()) {
+					// initialize the value as the zero value of the field type
+					fieldValue.Set(reflect.Zero(dfield.fieldType))
+					continue
+				}
+				errs = addError(errs, metaName, ErrBlank)
+				continue
+			}
+
+			// initialize the slice to an empty slice rather than the zero value
+			sliceValue.Set(reflect.MakeSlice(dfield.fieldType, 0, 0))
+
 			for i := 0; true; i += 1 {
 				nestedValues := sliceSrc.Get(fmt.Sprint(i)) // foo_bar.0, foo_bar.1, ...
 				if nestedValues.Malformed() {
@@ -363,13 +400,23 @@ func (d *Decoder) decode(destValue reflect.Value, src source) ErrorHash {
 						"error": ErrMalformed,
 					}
 				}
+
 				if nestedValues.Empty() {
 					break
 				}
-				var val interface{}
-				nestedValues.Value(&val)
+
 				elPtrValue := reflect.New(dfield.elemIndirectedType)
-				err := elPtrValue.Interface().(Valuer).JSONValue(nestedValues.Path(), val, dfield.Options)
+				var err Errorable
+				if dfield.fieldCategory == categorySliceOfValues {
+					var val interface{}
+					nestedValues.Value(&val)
+					err = elPtrValue.Interface().(Valuer).JSONValue(nestedValues.Path(), val, dfield.Options)
+				} else {
+					hashErr := dfield.StructDecoder.decode(elPtrValue, nestedValues)
+					if hashErr != nil {
+						err = hashErr
+					}
+				}
 				if err != nil {
 					errorsInSlice = append(errorsInSlice, err)
 				} else {
@@ -383,47 +430,14 @@ func (d *Decoder) decode(destValue reflect.Value, src source) ErrorHash {
 				}
 			}
 
-			fieldValue.Set(sliceValue)
-			if errorsInSlice.Len() > 0 {
-				errs = addError(errs, metaName, errorsInSlice)
-			}
-		case categorySliceOfStructs:
-			sliceValue := fieldValue
-			var errorsInSlice ErrorSlice
-
-			var i int
-			sliceSrc := src.Get(metaName)
-			for ; true; i += 1 {
-				nestedValues := sliceSrc.Get(fmt.Sprint(i)) // foo_bar.0, foo_bar.1, ...
-				if nestedValues.Malformed() {
-					return ErrorHash{
-						"error": ErrMalformed,
-					}
-				}
-
-				if nestedValues.Empty() {
-					break
-				}
-				elPtrValue := reflect.New(dfield.elemIndirectedType)
-
-				if err := dfield.StructDecoder.decode(elPtrValue, nestedValues); err != nil {
-					errorsInSlice = append(errorsInSlice, err)
-				} else {
-					errorsInSlice = append(errorsInSlice, nil)
-
-					if dfield.elemKind == reflect.Ptr {
-						sliceValue = reflect.Append(sliceValue, elPtrValue)
-					} else {
-						sliceValue = reflect.Append(sliceValue, reflect.Indirect(elPtrValue))
-					}
-				}
-			}
-
-			// Validate the length of the slice
-			if dfield.MinLengthPresent && dfield.MinLength > i {
+			length := sliceValue.Len()
+			if dfield.MinLengthPresent && dfield.MinLength > length {
 				errs = addError(errs, metaName, ErrMinLength)
-			} else if dfield.MaxLengthPresent && dfield.MaxLength < i {
+			} else if dfield.MaxLengthPresent && dfield.MaxLength < length {
 				errs = addError(errs, metaName, ErrMaxLength)
+			} else if errorsInSlice.Len() == 0 && dfield.SliceOptions.DiscardBlank && length == 0 {
+				// set to nil
+				fieldValue.Set(reflect.Zero(dfield.fieldType))
 			} else {
 				fieldValue.Set(sliceValue)
 				if errorsInSlice.Len() > 0 {
@@ -453,7 +467,7 @@ func (d *Decoder) NewDecoded(values url.Values, r io.Reader) (interface{}, Error
 	var b []byte
 	if r != nil {
 		var err error
-		b, err = ioutil.ReadAll(r)
+		b, err = io.ReadAll(r)
 		if err != nil {
 			// error hash is used to make it compatible with DecodeValues.
 			return nil, NewHash("error", err.Error())

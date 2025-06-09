@@ -55,10 +55,12 @@ func TestStringSliceBlank(t *testing.T) {
 	var inputs withStringSlice
 
 	e := withStringSliceDecoder.DecodeValues(&inputs, url.Values{"a": {""}})
-	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, false, inputs.A.Present)
 
 	e = withStringSliceDecoder.DecodeJSON(&inputs, []byte(`{"a":[]}`))
-	assertEqual(t, e, ErrorHash{"a": ErrBlank})
+	assertEqual(t, e, ErrorHash(nil))
+	assertEqual(t, false, inputs.A.Present)
 }
 
 func TestStringSliceBlankEntries(t *testing.T) {
