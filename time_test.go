@@ -425,3 +425,181 @@ func TestTimeExclusiveRange(t *testing.T) {
 	e = NewDecoder(&exclusiveExpressionInputs).DecodeValues(&exclusiveExpressionInputs, url.Values{"a": {"1_day_from_now"}})
 	assertEqual(t, e, ErrorHash{"a": ErrMax}, "exclusive expression - value equal to max expression should fail")
 }
+
+func TestTimeRounding(t *testing.T) {
+	// Test rounding down
+	var roundDownInputs struct {
+		A Time `meta_round:"day:down"`
+		B Time `meta_round:"hour:down"`
+		C Time `meta_round:"minute:down"`
+		D Time `meta_round:"week:down"`
+		E Time `meta_round:"month:down"`
+		F Time `meta_round:"year:down"`
+	}
+
+	e := NewDecoder(&roundDownInputs).DecodeValues(&roundDownInputs, url.Values{
+		"a": {"2024-01-15T14:30:45Z"},
+		"b": {"2024-01-15T14:30:45Z"},
+		"c": {"2024-01-15T14:30:45Z"},
+		"d": {"2024-01-17T14:30:45Z"}, // Wednesday
+		"e": {"2024-01-15T14:30:45Z"},
+		"f": {"2024-06-15T14:30:45Z"},
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+	assert(t, roundDownInputs.A.Val.Equal(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)))
+	assert(t, roundDownInputs.B.Val.Equal(time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC)))
+	assert(t, roundDownInputs.C.Val.Equal(time.Date(2024, 1, 15, 14, 30, 0, 0, time.UTC)))
+	assert(t, roundDownInputs.D.Val.Equal(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC))) // Monday
+	assert(t, roundDownInputs.E.Val.Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)))
+	assert(t, roundDownInputs.F.Val.Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+	// Test rounding up
+	var roundUpInputs struct {
+		A Time `meta_round:"day:up"`
+		B Time `meta_round:"hour:up"`
+		C Time `meta_round:"minute:up"`
+		D Time `meta_round:"week:up"`
+		E Time `meta_round:"month:up"`
+		F Time `meta_round:"year:up"`
+	}
+
+	e = NewDecoder(&roundUpInputs).DecodeValues(&roundUpInputs, url.Values{
+		"a": {"2024-01-15T14:30:45Z"},
+		"b": {"2024-01-15T14:30:45Z"},
+		"c": {"2024-01-15T14:30:45Z"},
+		"d": {"2024-01-17T14:30:45Z"}, // Wednesday
+		"e": {"2024-01-15T14:30:45Z"},
+		"f": {"2024-06-15T14:30:45Z"},
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+	assert(t, roundUpInputs.A.Val.Equal(time.Date(2024, 1, 16, 0, 0, 0, 0, time.UTC)))
+	assert(t, roundUpInputs.B.Val.Equal(time.Date(2024, 1, 15, 15, 0, 0, 0, time.UTC)))
+	assert(t, roundUpInputs.C.Val.Equal(time.Date(2024, 1, 15, 14, 31, 0, 0, time.UTC)))
+	assert(t, roundUpInputs.D.Val.Equal(time.Date(2024, 1, 22, 0, 0, 0, 0, time.UTC))) // Next Monday
+	assert(t, roundUpInputs.E.Val.Equal(time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)))
+	assert(t, roundUpInputs.F.Val.Equal(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+	// Test rounding nearest
+	var roundNearestInputs struct {
+		A Time `meta_round:"day:nearest"`
+		B Time `meta_round:"hour:nearest"`
+	}
+
+	e = NewDecoder(&roundNearestInputs).DecodeValues(&roundNearestInputs, url.Values{
+		"a": {"2024-01-15T12:00:00Z"}, // Exactly noon, should round down
+		"b": {"2024-01-15T14:30:00Z"}, // 30 minutes past, should round down
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+	assert(t, roundNearestInputs.A.Val.Equal(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)))
+	assert(t, roundNearestInputs.B.Val.Equal(time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC)))
+
+	// Test boundary conditions (already at boundary)
+	var boundaryInputs struct {
+		A Time `meta_round:"day:up"`
+		B Time `meta_round:"hour:up"`
+	}
+
+	e = NewDecoder(&boundaryInputs).DecodeValues(&boundaryInputs, url.Values{
+		"a": {"2024-01-15T00:00:00Z"}, // Already at day boundary
+		"b": {"2024-01-15T14:00:00Z"}, // Already at hour boundary
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+	assert(t, boundaryInputs.A.Val.Equal(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)))  // Should stay the same
+	assert(t, boundaryInputs.B.Val.Equal(time.Date(2024, 1, 15, 14, 0, 0, 0, time.UTC))) // Should stay the same
+}
+
+func TestTimeRoundingWithExpressions(t *testing.T) {
+	// Test rounding with time expressions
+	var expressionInputs struct {
+		A Time `meta_round:"day:down"`
+		B Time `meta_round:"hour:up"`
+		C Time `meta_round:"week:down"`
+	}
+
+	e := NewDecoder(&expressionInputs).DecodeValues(&expressionInputs, url.Values{
+		"a": {"2_days_ago"},
+		"b": {"3_hours_ago"},
+		"c": {"1_week_ago"},
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+
+	// Verify that expressions are rounded correctly
+	// A should be rounded down to the start of the day
+	assert(t, expressionInputs.A.Val.Hour() == 0 && expressionInputs.A.Val.Minute() == 0 && expressionInputs.A.Val.Second() == 0)
+
+	// B should be rounded up to the next hour
+	assert(t, expressionInputs.B.Val.Minute() == 0 && expressionInputs.B.Val.Second() == 0)
+
+	// C should be rounded down to the start of the week (Monday)
+	assert(t, expressionInputs.C.Val.Weekday() == time.Monday)
+	assert(t, expressionInputs.C.Val.Hour() == 0 && expressionInputs.C.Val.Minute() == 0 && expressionInputs.C.Val.Second() == 0)
+}
+
+func TestTimeRoundingWithDayNames(t *testing.T) {
+	// Test rounding to specific days of the week
+	var dayInputs struct {
+		Sunday    Time `meta_round:"sunday:down"`
+		Monday    Time `meta_round:"monday:down"`
+		Wednesday Time `meta_round:"wednesday:up"`
+		Friday    Time `meta_round:"friday:nearest"`
+	}
+
+	e := NewDecoder(&dayInputs).DecodeValues(&dayInputs, url.Values{
+		"sunday":    {"2024-01-17T14:30:45Z"}, // Wednesday
+		"monday":    {"2024-01-17T14:30:45Z"}, // Wednesday
+		"wednesday": {"2024-01-17T14:30:45Z"}, // Wednesday
+		"friday":    {"2024-01-17T14:30:45Z"}, // Wednesday
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+
+	// Should round down to previous Sunday
+	assert(t, dayInputs.Sunday.Val.Weekday() == time.Sunday)
+	assert(t, dayInputs.Sunday.Val.Before(time.Date(2024, 1, 17, 0, 0, 0, 0, time.UTC)))
+
+	// Should round down to previous Monday
+	assert(t, dayInputs.Monday.Val.Weekday() == time.Monday)
+	assert(t, dayInputs.Monday.Val.Before(time.Date(2024, 1, 17, 0, 0, 0, 0, time.UTC)))
+
+	// Should round up to next Wednesday (next week)
+	assert(t, dayInputs.Wednesday.Val.Weekday() == time.Wednesday)
+	assert(t, dayInputs.Wednesday.Val.Equal(time.Date(2024, 1, 24, 0, 0, 0, 0, time.UTC)))
+
+	// Should round to nearest Friday (should round to next Friday since we're closer to it)
+	assert(t, dayInputs.Friday.Val.Weekday() == time.Friday)
+	assert(t, dayInputs.Friday.Val.Equal(time.Date(2024, 1, 19, 0, 0, 0, 0, time.UTC)))
+}
+
+func TestTimeRoundingInvalidUnit(t *testing.T) {
+	// Test that invalid rounding units are ignored
+	var invalidInputs struct {
+		A Time `meta_round:"invalid:down"`
+	}
+
+	e := NewDecoder(&invalidInputs).DecodeValues(&invalidInputs, url.Values{
+		"a": {"2024-01-15T14:30:45Z"},
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+	// Should not apply any rounding, so the time should be exactly as parsed
+	assert(t, invalidInputs.A.Val.Equal(time.Date(2024, 1, 15, 14, 30, 45, 0, time.UTC)))
+}
+
+func TestTimeRoundingDefaultDirection(t *testing.T) {
+	// Test that default direction is "down" when not specified
+	var defaultInputs struct {
+		A Time `meta_round:"day"`
+	}
+
+	e := NewDecoder(&defaultInputs).DecodeValues(&defaultInputs, url.Values{
+		"a": {"2024-01-15T14:30:45Z"}, // Should round down to start of day
+	})
+
+	assertEqual(t, e, ErrorHash(nil))
+	assert(t, defaultInputs.A.Val.Equal(time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)))
+}
