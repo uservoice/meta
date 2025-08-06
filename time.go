@@ -25,10 +25,35 @@ type TimeOptions struct {
 	Required     bool
 	DiscardBlank bool
 	Null         bool
-	Format       []string
-	MinDate      *dateLimit
-	MaxDate      *dateLimit
-	Round        *roundConfig
+	// Format specifies the time formats to use for parsing time strings.
+	// Configured via meta_format tag.
+	// Can be predefined formats (RFC3339, DateOnly, etc.) or custom Go time layouts.
+	// Multiple formats can be specified as comma-separated values.
+	// Default: [RFC3339, "expression"] (supports RFC3339 format and time expressions like "now", "3_days_ago")
+	// Examples: `meta_format:"RFC3339"`, `meta_format:"DateOnly"`, `meta_format:"1/2/2006"`, `meta_format:"RFC3339,2006-01-02 15:04:05"`
+	Format []string
+	// MinDate sets the minimum allowed date/time value.
+	// Configured via meta_min tag.
+	// Can be an absolute date/time string or a relative expression.
+	// Supports exclusive boundaries with "!" prefix.
+	// Default: nil (no minimum limit)
+	// Examples: `meta_min:"2024-01-01"`, `meta_min:"3_days_ago"`, `meta_min:"!1_day_ago"`
+	MinDate *dateLimit
+	// MaxDate sets the maximum allowed date/time value.
+	// Configured via meta_max tag.
+	// Can be an absolute date/time string or a relative expression.
+	// Supports exclusive boundaries with "!" prefix.
+	// Default: nil (no maximum limit)
+	// Examples: `meta_max:"2024-12-31"`, `meta_max:"now"`, `meta_max:"!1_day_from_now"`
+	MaxDate *dateLimit
+	// Round configures time rounding behavior.
+	// Configured via meta_round tag.
+	// Format: "unit:direction" where unit can be year, month, week, day, hour, minute, second, nanosecond,
+	// or day names (sunday, monday, etc.), and direction can be up, down, or nearest.
+	// Default: nil (no rounding applied)
+	// Direction defaults to "down" if not specified (e.g., `meta_round:"day"` is equivalent to `meta_round:"day:down"`)
+	// Examples: `meta_round:"day:down"`, `meta_round:"hour:up"`, `meta_round:"monday:nearest"`, `meta_round:"week:down"`
+	Round *roundConfig
 }
 
 type roundConfig struct {
