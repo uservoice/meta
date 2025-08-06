@@ -77,22 +77,52 @@ func TestTimeCustomFormat(t *testing.T) {
 
 func TestMultipleFormats(t *testing.T) {
 	var inputs struct {
-		A Time
+		A Time `meta_format:"RFC3339,2006-01-02 15:04:05"`
 	}
 
-	e := NewDecoderWithOptions(&inputs, DecoderOptions{
-		TimeFormats: []string{time.RFC3339, "2006-01-02 15:04:05"},
-	}).DecodeValues(&inputs, url.Values{"a": {"2016-01-01 00:00:00"}})
+	e := NewDecoder(&inputs).DecodeValues(&inputs, url.Values{"a": {"2016-01-01 00:00:00"}})
 	assertEqual(t, e, ErrorHash(nil))
 	assert(t, inputs.A.Val.Equal(time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)))
 	assertEqual(t, inputs.A.Present, true)
 
-	e = NewDecoderWithOptions(&inputs, DecoderOptions{
-		TimeFormats: []string{time.RFC3339, "2006-01-02 15:04:05"},
-	}).DecodeValues(&inputs, url.Values{"a": {"2016-01-01T00:00:00Z"}})
+	e = NewDecoder(&inputs).DecodeValues(&inputs, url.Values{"a": {"2016-01-01T00:00:00Z"}})
 	assertEqual(t, e, ErrorHash(nil))
 	assert(t, inputs.A.Val.Equal(time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC)))
 	assertEqual(t, inputs.A.Present, true)
+}
+
+func TestTimeRange(t *testing.T) {
+	var relativeInputs struct {
+		A Time `meta_min:"3_days_ago" meta_max:"now"`
+	}
+
+	var absoluteInputs struct {
+		A Time `meta_format:"DateOnly" meta_min:"2016-01-01" meta_max:"2016-01-02"`
+	}
+
+	// date within range should not error
+	e := NewDecoder(&relativeInputs).DecodeValues(&relativeInputs, url.Values{"a": {"3_days_ago"}})
+	assertEqual(t, e, ErrorHash(nil), "checking relative within range")
+
+	// date earlier than min should error
+	e = NewDecoder(&relativeInputs).DecodeJSON(&relativeInputs, []byte(`{"a":"4_days_ago"}`))
+	assertEqual(t, e, ErrorHash{"a": ErrMin}, "checking relative earlier than min")
+
+	// date later than max should error
+	e = NewDecoder(&relativeInputs).DecodeJSON(&relativeInputs, []byte(`{"a":"1_day_from_now"}`))
+	assertEqual(t, e, ErrorHash{"a": ErrMax}, "checking relative later than max")
+
+	// date within range should not error
+	e = NewDecoder(&absoluteInputs).DecodeValues(&absoluteInputs, url.Values{"a": {"2016-01-01"}})
+	assertEqual(t, e, ErrorHash(nil), "checking absolute within range")
+
+	// date earlier than min should error
+	e = NewDecoder(&absoluteInputs).DecodeJSON(&absoluteInputs, []byte(`{"a":"2015-12-31"}`))
+	assertEqual(t, e, ErrorHash{"a": ErrMin}, "checking absolute earlier than min")
+
+	// date later than max should error
+	e = NewDecoder(&absoluteInputs).DecodeJSON(&absoluteInputs, []byte(`{"a":"2016-01-03"}`))
+	assertEqual(t, e, ErrorHash{"a": ErrMax}, "checking absolute later than max")
 }
 
 type withOptionalTime struct {
@@ -326,4 +356,72 @@ func TestTimeExpressions(t *testing.T) {
 		assertEqual(t, inputs.A.Present, true)
 		assertion(inputs.A.Val.UTC(), before.UTC(), after.UTC())
 	}
+}
+
+func TestTimeExclusiveRange(t *testing.T) {
+	var exclusiveMinInputs struct {
+		A Time `meta_min:"!2024-01-01T00:00:00Z" meta_format:"RFC3339"`
+	}
+
+	var exclusiveMaxInputs struct {
+		A Time `meta_max:"!2024-12-31T23:59:59Z" meta_format:"RFC3339"`
+	}
+
+	var exclusiveBothInputs struct {
+		A Time `meta_min:"!2024-01-01T00:00:00Z" meta_max:"!2024-12-31T23:59:59Z" meta_format:"RFC3339"`
+	}
+
+	var exclusiveExpressionInputs struct {
+		A Time `meta_min:"!1_day_ago" meta_max:"!1_day_from_now"`
+	}
+
+	// Test exclusive min - value equal to min should fail
+	e := NewDecoder(&exclusiveMinInputs).DecodeValues(&exclusiveMinInputs, url.Values{"a": {"2024-01-01T00:00:00Z"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMin}, "exclusive min - value equal to min should fail")
+
+	// Test exclusive min - value before min should fail
+	e = NewDecoder(&exclusiveMinInputs).DecodeValues(&exclusiveMinInputs, url.Values{"a": {"2023-12-31T23:59:59Z"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMin}, "exclusive min - value before min should fail")
+
+	// Test exclusive min - value after min should pass
+	e = NewDecoder(&exclusiveMinInputs).DecodeValues(&exclusiveMinInputs, url.Values{"a": {"2024-01-01T00:00:01Z"}})
+	assertEqual(t, e, ErrorHash(nil), "exclusive min - value after min should pass")
+
+	// Test exclusive min - value with different time on same day should pass
+	e = NewDecoder(&exclusiveMinInputs).DecodeValues(&exclusiveMinInputs, url.Values{"a": {"2024-01-01T12:00:00Z"}})
+	assertEqual(t, e, ErrorHash(nil), "exclusive min - value with different time on same day should pass")
+
+	// Test exclusive max - value equal to max should fail
+	e = NewDecoder(&exclusiveMaxInputs).DecodeValues(&exclusiveMaxInputs, url.Values{"a": {"2024-12-31T23:59:59Z"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMax}, "exclusive max - value equal to max should fail")
+
+	// Test exclusive max - value after max should fail
+	e = NewDecoder(&exclusiveMaxInputs).DecodeValues(&exclusiveMaxInputs, url.Values{"a": {"2025-01-01T00:00:00Z"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMax}, "exclusive max - value after max should fail")
+
+	// Test exclusive max - value before max should pass
+	e = NewDecoder(&exclusiveMaxInputs).DecodeValues(&exclusiveMaxInputs, url.Values{"a": {"2024-12-31T23:59:58Z"}})
+	assertEqual(t, e, ErrorHash(nil), "exclusive max - value before max should pass")
+
+	// Test exclusive max - value with different time on same day should pass
+	e = NewDecoder(&exclusiveMaxInputs).DecodeValues(&exclusiveMaxInputs, url.Values{"a": {"2024-12-31T12:00:00Z"}})
+	assertEqual(t, e, ErrorHash(nil), "exclusive max - value with different time on same day should pass")
+
+	// Test exclusive both - value at boundaries should fail
+	e = NewDecoder(&exclusiveBothInputs).DecodeValues(&exclusiveBothInputs, url.Values{"a": {"2024-01-01T00:00:00Z"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMin}, "exclusive both - value at min boundary should fail")
+
+	e = NewDecoder(&exclusiveBothInputs).DecodeValues(&exclusiveBothInputs, url.Values{"a": {"2024-12-31T23:59:59Z"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMax}, "exclusive both - value at max boundary should fail")
+
+	// Test exclusive both - value in middle should pass
+	e = NewDecoder(&exclusiveBothInputs).DecodeValues(&exclusiveBothInputs, url.Values{"a": {"2024-06-15T12:30:45Z"}})
+	assertEqual(t, e, ErrorHash(nil), "exclusive both - value in middle should pass")
+
+	// Test exclusive expressions - value equal to expression should fail
+	e = NewDecoder(&exclusiveExpressionInputs).DecodeValues(&exclusiveExpressionInputs, url.Values{"a": {"1_day_ago"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMin}, "exclusive expression - value equal to min expression should fail")
+
+	e = NewDecoder(&exclusiveExpressionInputs).DecodeValues(&exclusiveExpressionInputs, url.Values{"a": {"1_day_from_now"}})
+	assertEqual(t, e, ErrorHash{"a": ErrMax}, "exclusive expression - value equal to max expression should fail")
 }

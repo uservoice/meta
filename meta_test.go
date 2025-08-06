@@ -3,6 +3,7 @@ package meta
 import (
 	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"reflect"
 	"testing"
@@ -14,9 +15,17 @@ func assert(t *testing.T, this bool) {
 	}
 }
 
-func assertEqual(t *testing.T, a interface{}, b interface{}) {
+func assertEqual(t *testing.T, a interface{}, b interface{}, msgAndArgs ...interface{}) {
 	if !reflect.DeepEqual(a, b) {
-		t.Errorf("Expected %v (type %v) - Got %v (type %v)", b, reflect.TypeOf(b), a, reflect.TypeOf(a))
+		msg := "Expected %v (type %v) - Got %v (type %v)"
+		if len(msgAndArgs) > 0 {
+			msg += "\n" + fmt.Sprintf("%v", msgAndArgs[0])
+		}
+		args := []interface{}{b, reflect.TypeOf(b), a, reflect.TypeOf(a)}
+		if len(msgAndArgs) > 1 {
+			args = append(args, msgAndArgs[1:]...)
+		}
+		t.Errorf(msg, args...)
 	}
 }
 
