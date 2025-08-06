@@ -575,6 +575,36 @@ func TestTimeRoundingWithDayNames(t *testing.T) {
 	assert(t, dayInputs.Friday.Val.Equal(time.Date(2024, 1, 19, 0, 0, 0, 0, time.UTC)))
 }
 
+func TestTimeRoundingWithRelativeExpressions(t *testing.T) {
+	var relativeInputs struct {
+		A Time `meta_round:"day:down"`
+	}
+
+	e := NewDecoder(&relativeInputs).DecodeValues(&relativeInputs, url.Values{
+		"a": {"1_month_ago"},
+	})
+	assertEqual(t, e, ErrorHash(nil))
+
+	// Calculate what the day should be after going back 1 month
+	expectedTime := time.Now().AddDate(0, -1, 0)
+	expectedDay := expectedTime.Day()
+
+	// The day should be either the same as current day OR the last day of the previous month
+	// (when the previous month has fewer days than the current month)
+	assert(t, relativeInputs.A.Val.Day() == expectedDay)
+}
+
+func TestRoundUpToDayWithMaxNow(t *testing.T) {
+	var maxNowInputs struct {
+		A Time `meta_max:"now" meta_round:"day:up"`
+	}
+
+	e := NewDecoder(&maxNowInputs).DecodeValues(&maxNowInputs, url.Values{
+		"a": {"now"},
+	})
+	assertEqual(t, e, ErrorHash(nil))
+}
+
 func TestTimeRoundingInvalidUnit(t *testing.T) {
 	// Test that invalid rounding units are ignored
 	var invalidInputs struct {

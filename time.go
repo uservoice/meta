@@ -643,6 +643,12 @@ func (d *dateLimit) Value(opts *TimeOptions) time.Time {
 	if d.isAbsolute {
 		return d.value
 	} else if v := resolveTimeExpression(d.raw); v != nil {
+		// Apply the same rounding to expression-based boundaries
+		if opts.Round != nil {
+			tempTime := Time{Val: *v}
+			tempTime.applyRounding(opts)
+			return tempTime.Val
+		}
 		return *v
 	}
 
