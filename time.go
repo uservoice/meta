@@ -11,7 +11,7 @@ import (
 )
 
 //
-// Time
+// Core Types and Structures
 //
 
 type Time struct {
@@ -38,6 +38,7 @@ type TimeOptions struct {
 	// Supports exclusive boundaries with "!" prefix.
 	// Default: nil (no minimum limit)
 	// Examples: `meta_min:"2024-01-01"`, `meta_min:"3_days_ago"`, `meta_min:"!1_day_ago"`
+	// NOTE: configured/default rounding is applied to the min date
 	MinDate *dateLimit
 	// MaxDate sets the maximum allowed date/time value.
 	// Configured via meta_max tag.
@@ -45,8 +46,9 @@ type TimeOptions struct {
 	// Supports exclusive boundaries with "!" prefix.
 	// Default: nil (no maximum limit)
 	// Examples: `meta_max:"2024-12-31"`, `meta_max:"now"`, `meta_max:"!1_day_from_now"`
+	// NOTE: configured/default rounding is applied to the max date
 	MaxDate *dateLimit
-	// Round configures time rounding behavior.
+	// Round configures time rounding behavior for absolute times (e.g., "2024-01-01").
 	// Configured via meta_round tag.
 	// Format: "unit:direction" where unit can be year, month, week, day, hour, minute, second, nanosecond,
 	// or day names (sunday, monday, etc.), and direction can be up, down, or nearest.
@@ -54,6 +56,16 @@ type TimeOptions struct {
 	// Direction defaults to "down" if not specified (e.g., `meta_round:"day"` is equivalent to `meta_round:"day:down"`)
 	// Examples: `meta_round:"day:down"`, `meta_round:"hour:up"`, `meta_round:"monday:nearest"`, `meta_round:"week:down"`
 	Round *roundConfig
+	// RelativeRound configures rounding behavior for relative time expressions (e.g., "1_day_ago", "2_hours_from_now").
+	// Configured via meta_relative_round tag.
+	// Values: "auto" (default), "up", "down", "none"
+	// - "auto": ago expressions round down, from_now expressions round up
+	// - "up": all relative expressions round up
+	// - "down": all relative expressions round down
+	// - "none": no rounding, just add/subtract duration
+	// Only affects relative expressions (e.g., "1_day_ago", "2_hours_from_now"), not "now"
+	// Examples: `meta_relative_round:"auto"`, `meta_relative_round:"up"`, `meta_relative_round:"none"`
+	RelativeRound RelativeRoundMode
 }
 
 type roundConfig struct {
@@ -68,16 +80,316 @@ type dateLimit struct {
 	raw        string
 }
 
+type timeComponent struct {
+	year, month, day, hour, minute, second, nanosecond int
+}
+
+type expressionParser struct {
+	*regexp.Regexp
+	Parse func([]string, RelativeRoundMode) (time.Time, bool)
+}
+
+// standardRoundingConfig defines how to round standard units
+type standardRoundingConfig struct {
+	unit     RoundingUnit
+	upFunc   func(timeComponent) timeComponent
+	zeroFunc func(*timeComponent)
+}
+
+//
+// Constants
+//
+
+const (
+	// TimeComparisonTolerance allows for some tolerance in time comparisons
+	// to handle time expression resolution differences
+	TimeComparisonTolerance = time.Millisecond * 250 // 1/4 second
+)
+
+//
+// Type Definitions for Rounding
+//
+
+// RoundingUnit represents the unit for time rounding
+type RoundingUnit string
+
+// RoundingDirection represents the direction for time rounding
+type RoundingDirection string
+
+// RelativeRoundMode represents the rounding mode for relative time expressions
+type RelativeRoundMode string
+
+// DayName represents a day of the week
+type DayName string
+
+const (
+	// Rounding units
+	UnitYear       RoundingUnit = "year"
+	UnitMonth      RoundingUnit = "month"
+	UnitWeek       RoundingUnit = "week"
+	UnitDay        RoundingUnit = "day"
+	UnitHour       RoundingUnit = "hour"
+	UnitMinute     RoundingUnit = "minute"
+	UnitSecond     RoundingUnit = "second"
+	UnitNanosecond RoundingUnit = "nanosecond"
+
+	// Rounding directions
+	DirectionUp      RoundingDirection = "up"
+	DirectionDown    RoundingDirection = "down"
+	DirectionNearest RoundingDirection = "nearest"
+
+	// Relative round modes
+	RelativeRoundAuto RelativeRoundMode = "auto"
+	RelativeRoundUp   RelativeRoundMode = "up"
+	RelativeRoundDown RelativeRoundMode = "down"
+	RelativeRoundNone RelativeRoundMode = "none"
+
+	// Day names
+	DaySunday    DayName = "sunday"
+	DayMonday    DayName = "monday"
+	DayTuesday   DayName = "tuesday"
+	DayWednesday DayName = "wednesday"
+	DayThursday  DayName = "thursday"
+	DayFriday    DayName = "friday"
+	DaySaturday  DayName = "saturday"
+)
+
+//
+// Global Variables and Maps
+//
+
+// timeFormatMap maps predefined format names to their constants
+var timeFormatMap = map[string]string{
+	"ANSIC":       time.ANSIC,
+	"UnixDate":    time.UnixDate,
+	"RubyDate":    time.RubyDate,
+	"RFC822":      time.RFC822,
+	"RFC822Z":     time.RFC822Z,
+	"RFC850":      time.RFC850,
+	"RFC1123":     time.RFC1123,
+	"RFC1123Z":    time.RFC1123Z,
+	"RFC3339":     time.RFC3339,
+	"RFC3339Nano": time.RFC3339Nano,
+	"Kitchen":     time.Kitchen,
+	"Stamp":       time.Stamp,
+	"StampMilli":  time.StampMilli,
+	"StampMicro":  time.StampMicro,
+	"StampNano":   time.StampNano,
+	"DateTime":    time.DateTime,
+	"DateOnly":    time.DateOnly,
+	"TimeOnly":    time.TimeOnly,
+}
+
+// dayNameToWeekday maps day names to time.Weekday values
+var dayNameToWeekday = map[string]time.Weekday{
+	"sunday":    time.Sunday,
+	"monday":    time.Monday,
+	"tuesday":   time.Tuesday,
+	"wednesday": time.Wednesday,
+	"thursday":  time.Thursday,
+	"friday":    time.Friday,
+	"saturday":  time.Saturday,
+	// Abbreviations
+	"sun": time.Sunday,
+	"mon": time.Monday,
+	"tue": time.Tuesday,
+	"wed": time.Wednesday,
+	"thu": time.Thursday,
+	"fri": time.Friday,
+	"sat": time.Saturday,
+}
+
+// dayNames provides consistent day name strings
+var dayNames = []DayName{DaySunday, DayMonday, DayTuesday, DayWednesday, DayThursday, DayFriday, DaySaturday}
+
+// Valid traditional units for rounding
+var validUnits = map[string]RoundingUnit{
+	string(UnitYear):       UnitYear,
+	string(UnitMonth):      UnitMonth,
+	string(UnitWeek):       UnitWeek,
+	string(UnitDay):        UnitDay,
+	string(UnitHour):       UnitHour,
+	string(UnitMinute):     UnitMinute,
+	string(UnitSecond):     UnitSecond,
+	string(UnitNanosecond): UnitNanosecond,
+}
+
+// Valid rounding directions
+var validDirections = map[string]RoundingDirection{
+	string(DirectionUp):      DirectionUp,
+	string(DirectionDown):    DirectionDown,
+	string(DirectionNearest): DirectionNearest,
+}
+
+// timeUnitDuration maps time unit strings to their corresponding durations
+var timeUnitDuration = map[RoundingUnit]time.Duration{
+	UnitHour:       time.Hour,
+	UnitMinute:     time.Minute,
+	UnitSecond:     time.Second,
+	UnitNanosecond: time.Nanosecond,
+}
+
+// timeUnitAddDate maps time unit strings to their AddDate parameters
+var timeUnitAddDate = map[RoundingUnit]func(int) (int, int, int){
+	UnitYear:  func(delta int) (int, int, int) { return delta, 0, 0 },
+	UnitMonth: func(delta int) (int, int, int) { return 0, delta, 0 },
+	UnitWeek:  func(delta int) (int, int, int) { return 0, 0, delta * 7 },
+	UnitDay:   func(delta int) (int, int, int) { return 0, 0, delta },
+}
+
+// absoluteTimeExpressions maps expression names to their time values
+var absoluteTimeExpressions = map[string]func() time.Time{
+	"now": func() time.Time { return time.Now() },
+	"today": func() time.Time {
+		now := time.Now()
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	},
+	"yesterday": func() time.Time {
+		now := time.Now()
+		base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		return base.AddDate(0, 0, -1)
+	},
+	"tomorrow": func() time.Time {
+		now := time.Now()
+		base := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		return base.AddDate(0, 0, 1)
+	},
+}
+
+// standardRoundingConfigs maps standard units to their rounding configurations
+var standardRoundingConfigs = map[RoundingUnit]standardRoundingConfig{
+	UnitYear: {
+		unit: UnitYear,
+		upFunc: func(comp timeComponent) timeComponent {
+			comp.year++
+			return comp
+		},
+		zeroFunc: func(comp *timeComponent) {
+			comp.month, comp.day, comp.hour, comp.minute, comp.second, comp.nanosecond = 1, 1, 0, 0, 0, 0
+		},
+	},
+	UnitMonth: {
+		unit: UnitMonth,
+		upFunc: func(comp timeComponent) timeComponent {
+			// First zero the components, then add 1 month
+			comp.day, comp.hour, comp.minute, comp.second, comp.nanosecond = 1, 0, 0, 0, 0
+			nextMonth := time.Date(comp.year, time.Month(comp.month), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0)
+			comp.year, comp.month = nextMonth.Year(), int(nextMonth.Month())
+			return comp
+		},
+		zeroFunc: func(comp *timeComponent) {
+			comp.day, comp.hour, comp.minute, comp.second, comp.nanosecond = 1, 0, 0, 0, 0
+		},
+	},
+	UnitDay: {
+		unit: UnitDay,
+		upFunc: func(comp timeComponent) timeComponent {
+			comp.day++
+			return comp
+		},
+		zeroFunc: func(comp *timeComponent) {
+			comp.hour, comp.minute, comp.second, comp.nanosecond = 0, 0, 0, 0
+		},
+	},
+	UnitHour: {
+		unit: UnitHour,
+		upFunc: func(comp timeComponent) timeComponent {
+			comp.hour++
+			return comp
+		},
+		zeroFunc: func(comp *timeComponent) {
+			comp.minute, comp.second, comp.nanosecond = 0, 0, 0
+		},
+	},
+	UnitMinute: {
+		unit: UnitMinute,
+		upFunc: func(comp timeComponent) timeComponent {
+			comp.minute++
+			return comp
+		},
+		zeroFunc: func(comp *timeComponent) {
+			comp.second, comp.nanosecond = 0, 0
+		},
+	},
+	UnitSecond: {
+		unit: UnitSecond,
+		upFunc: func(comp timeComponent) timeComponent {
+			comp.second++
+			return comp
+		},
+		zeroFunc: func(comp *timeComponent) {
+			comp.nanosecond = 0
+		},
+	},
+	UnitNanosecond: {
+		unit: UnitNanosecond,
+		upFunc: func(comp timeComponent) timeComponent {
+			return comp // No change for nanoseconds
+		},
+		zeroFunc: func(comp *timeComponent) {
+			// No zeroing for nanoseconds
+		},
+	},
+}
+
+// boundaryChecks maps unit names to their boundary checking functions
+var boundaryChecks = map[string]func(time.Time) bool{
+	"year": func(t time.Time) bool {
+		return t.YearDay() == 1 && t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0
+	},
+	"month": func(t time.Time) bool {
+		return t.Day() == 1 && t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0
+	},
+	"day": func(t time.Time) bool {
+		return t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0
+	},
+	"hour": func(t time.Time) bool {
+		return t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0
+	},
+	"minute": func(t time.Time) bool {
+		return t.Second() == 0 && t.Nanosecond() == 0
+	},
+	"second": func(t time.Time) bool {
+		return t.Nanosecond() == 0
+	},
+}
+
+// Pre-compile regex patterns for better performance
+var (
+	relativeTimeRegex = regexp.MustCompile(`^(\d+)_(year|month|week|day|hour|minute|second|nanosecond)s?_(ago|from_now)$`)
+	absoluteTimeRegex = regexp.MustCompile(`^(now|today|yesterday|tomorrow)$`)
+)
+
+var timeExpressionParsers = []expressionParser{
+	{
+		Regexp: relativeTimeRegex,
+		Parse:  parseRelativeTimeExpression,
+	},
+	{
+		Regexp: absoluteTimeRegex,
+		Parse:  parseAbsoluteTimeExpression,
+	},
+}
+
+//
+// Constructor
+//
+
 func NewTime(t time.Time) Time {
 	return Time{t, Nullity{false}, Presence{true}, ""}
 }
 
+//
+// Core Time Methods
+//
+
 func (t *Time) ParseOptions(tag reflect.StructTag) interface{} {
 	opts := &TimeOptions{
-		Required:     tag.Get("meta_required") == "true",
-		DiscardBlank: tag.Get("meta_discard_blank") != "false",
-		Null:         tag.Get("meta_null") == "true",
-		Format:       parseFormats(tag.Get("meta_format")),
+		Required:      tag.Get("meta_required") == "true",
+		DiscardBlank:  tag.Get("meta_discard_blank") != "false",
+		Null:          tag.Get("meta_null") == "true",
+		Format:        parseFormats(tag.Get("meta_format")),
+		RelativeRound: RelativeRoundAuto, // Default to auto behavior
 	}
 
 	opts.MinDate = newDateLimit(tag.Get("meta_min"), opts)
@@ -86,6 +398,11 @@ func (t *Time) ParseOptions(tag reflect.StructTag) interface{} {
 	// Parse rounding configuration
 	if roundTag := tag.Get("meta_round"); roundTag != "" {
 		opts.Round = parseRoundConfig(roundTag)
+	}
+
+	// Parse relative rounding configuration
+	if relativeRoundTag := tag.Get("meta_relative_round"); relativeRoundTag != "" {
+		opts.RelativeRound = parseRelativeRoundConfig(relativeRoundTag)
 	}
 
 	return opts
@@ -149,106 +466,81 @@ func (t *Time) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// timeFormatMap maps predefined format names to their constants
-var timeFormatMap = map[string]string{
-	"ANSIC":       time.ANSIC,
-	"UnixDate":    time.UnixDate,
-	"RubyDate":    time.RubyDate,
-	"RFC822":      time.RFC822,
-	"RFC822Z":     time.RFC822Z,
-	"RFC850":      time.RFC850,
-	"RFC1123":     time.RFC1123,
-	"RFC1123Z":    time.RFC1123Z,
-	"RFC3339":     time.RFC3339,
-	"RFC3339Nano": time.RFC3339Nano,
-	"Kitchen":     time.Kitchen,
-	"Stamp":       time.Stamp,
-	"StampMilli":  time.StampMilli,
-	"StampMicro":  time.StampMicro,
-	"StampNano":   time.StampNano,
-	"DateTime":    time.DateTime,
-	"DateOnly":    time.DateOnly,
-	"TimeOnly":    time.TimeOnly,
+//
+// Value Handling Methods - Consolidated
+//
+
+func (t *Time) handleZeroTimeValue(opts *TimeOptions) Errorable {
+	return t.handleEmptyValue(opts)
 }
 
-// Day name mappings
-var dayNameToWeekday = map[string]time.Weekday{
-	"sunday":    time.Sunday,
-	"monday":    time.Monday,
-	"tuesday":   time.Tuesday,
-	"wednesday": time.Wednesday,
-	"thursday":  time.Thursday,
-	"friday":    time.Friday,
-	"saturday":  time.Saturday,
-	// Abbreviations
-	"sun": time.Sunday,
-	"mon": time.Monday,
-	"tue": time.Tuesday,
-	"wed": time.Wednesday,
-	"thu": time.Thursday,
-	"fri": time.Friday,
-	"sat": time.Saturday,
+func (t *Time) handleNonZeroTimeValue(value time.Time, opts *TimeOptions) Errorable {
+	t.Present = true
+	t.Val = value
+	t.applyRounding(opts)
+	return t.assertTimeRange(opts)
 }
 
-// RoundingUnit represents the unit for time rounding
-type RoundingUnit string
-
-// RoundingDirection represents the direction for time rounding
-type RoundingDirection string
-
-const (
-	// Rounding units
-	UnitYear       RoundingUnit = "year"
-	UnitMonth      RoundingUnit = "month"
-	UnitWeek       RoundingUnit = "week"
-	UnitDay        RoundingUnit = "day"
-	UnitHour       RoundingUnit = "hour"
-	UnitMinute     RoundingUnit = "minute"
-	UnitSecond     RoundingUnit = "second"
-	UnitNanosecond RoundingUnit = "nanosecond"
-
-	// Rounding directions
-	DirectionUp      RoundingDirection = "up"
-	DirectionDown    RoundingDirection = "down"
-	DirectionNearest RoundingDirection = "nearest"
-)
-
-// Valid traditional units for rounding
-var validUnits = map[string]RoundingUnit{
-	string(UnitYear):       UnitYear,
-	string(UnitMonth):      UnitMonth,
-	string(UnitWeek):       UnitWeek,
-	string(UnitDay):        UnitDay,
-	string(UnitHour):       UnitHour,
-	string(UnitMinute):     UnitMinute,
-	string(UnitSecond):     UnitSecond,
-	string(UnitNanosecond): UnitNanosecond,
+func (t *Time) handleEmptyValue(opts *TimeOptions) Errorable {
+	if opts.Null {
+		t.Present = true
+		t.Null = true
+		return nil
+	}
+	if opts.Required {
+		return ErrBlank
+	}
+	if !opts.DiscardBlank {
+		t.Present = true
+		return ErrBlank
+	}
+	return nil
 }
 
-// Valid rounding directions
-var validDirections = map[string]RoundingDirection{
-	string(DirectionUp):      DirectionUp,
-	string(DirectionDown):    DirectionDown,
-	string(DirectionNearest): DirectionNearest,
+//
+// Time Parsing Methods
+//
+
+func (t *Time) parseTimeValue(value string, opts *TimeOptions) Errorable {
+	for _, format := range opts.Format {
+		switch format {
+		case "expression":
+			if t.parseTimeExpression(value, opts) {
+				return t.assertTimeRange(opts)
+			}
+		default:
+			if t.parseTimeFormat(value, format, opts) {
+				return t.assertTimeRange(opts)
+			}
+		}
+	}
+	return ErrTime
 }
 
-// DayName represents a day of the week
-type DayName string
+func (t *Time) parseTimeExpression(value string, opts *TimeOptions) bool {
+	if v := resolveTimeExpression(value, opts.RelativeRound); v != nil {
+		t.Val = *v
+		t.Present = true
+		t.applyRounding(opts)
+		return true
+	}
+	return false
+}
 
-const (
-	DaySunday    DayName = "sunday"
-	DayMonday    DayName = "monday"
-	DayTuesday   DayName = "tuesday"
-	DayWednesday DayName = "wednesday"
-	DayThursday  DayName = "thursday"
-	DayFriday    DayName = "friday"
-	DaySaturday  DayName = "saturday"
-)
+func (t *Time) parseTimeFormat(value string, format string, opts *TimeOptions) bool {
+	if v, err := time.Parse(format, value); err == nil {
+		t.Val = v
+		t.Present = true
+		t.applyRounding(opts)
+		return true
+	}
+	return false
+}
 
-// dayNames provides consistent day name strings
-var dayNames = []DayName{DaySunday, DayMonday, DayTuesday, DayWednesday, DayThursday, DayFriday, DaySaturday}
+//
+// Format Parsing
+//
 
-// parseFormats extracts and validates time format strings from the tag
 func parseFormats(formatTag string) []string {
 	if formatTag == "" {
 		return []string{time.RFC3339, "expression"}
@@ -269,19 +561,133 @@ func parseFormats(formatTag string) []string {
 	return result
 }
 
-// Helper function to normalize day name
-func normalizeDayName(dayName string) (DayName, bool) {
-	if dayName == "" {
-		return "", false
+//
+// Expression Parsing
+//
+
+func resolveTimeExpression(value string, relativeRoundMode RelativeRoundMode) *time.Time {
+	for _, parser := range timeExpressionParsers {
+		submatches := parser.Regexp.FindStringSubmatch(value)
+		if len(submatches) == 0 {
+			continue
+		}
+		if v, ok := parser.Parse(submatches, relativeRoundMode); ok {
+			return &v
+		}
+	}
+	return nil
+}
+
+func parseRelativeTimeExpression(matches []string, relativeRoundMode RelativeRoundMode) (time.Time, bool) {
+	delta, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return time.Time{}, false
 	}
 
-	dayName = strings.ToLower(strings.TrimSpace(dayName))
-	if weekday, ok := dayNameToWeekday[dayName]; ok {
-		// Return the full day name for consistency
-		return dayNames[weekday], true
+	unit := RoundingUnit(matches[2])
+	isAgo := matches[3] == "ago"
+
+	var result time.Time
+
+	// Handle AddDate units (year, month, week, day)
+	if addDateFunc, exists := timeUnitAddDate[unit]; exists {
+		years, months, days := addDateFunc(delta)
+		if isAgo {
+			result = time.Now().AddDate(-years, -months, -days)
+		} else {
+			result = time.Now().AddDate(years, months, days)
+		}
+	} else if duration, exists := timeUnitDuration[unit]; exists {
+		// Handle Duration units (hour, minute, second, nanosecond)
+		if isAgo {
+			result = time.Now().Add(-time.Duration(delta) * duration)
+		} else {
+			result = time.Now().Add(time.Duration(delta) * duration)
+		}
+	} else {
+		return time.Time{}, false
 	}
-	return "", false
+
+	// Apply rounding based on the relative round mode
+	return applyRelativeRounding(result, unit, isAgo, relativeRoundMode), true
 }
+
+func parseAbsoluteTimeExpression(matches []string, relativeRoundMode RelativeRoundMode) (time.Time, bool) {
+	if fn, exists := absoluteTimeExpressions[matches[1]]; exists {
+		return fn(), true
+	}
+	return time.Time{}, false
+}
+
+//
+// Relative Rounding - Simplified
+//
+
+func applyRelativeRounding(t time.Time, unit RoundingUnit, isAgo bool, mode RelativeRoundMode) time.Time {
+	switch mode {
+	case RelativeRoundNone:
+		return t
+	case RelativeRoundUp:
+		return applyAutoRounding(t, unit, false)
+	case RelativeRoundDown:
+		return applyAutoRounding(t, unit, true)
+	case RelativeRoundAuto:
+		return applyAutoRounding(t, unit, isAgo)
+	default:
+		return applyAutoRounding(t, unit, isAgo)
+	}
+}
+
+func applyAutoRounding(t time.Time, unit RoundingUnit, isAgo bool) time.Time {
+	switch unit {
+	case UnitYear:
+		t = time.Date(t.Year(), 1, 1, 0, 0, 0, 0, t.Location())
+		if !isAgo {
+			t = t.AddDate(1, 0, 0).Add(-time.Nanosecond)
+		}
+	case UnitMonth:
+		t = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
+		if !isAgo {
+			t = t.AddDate(0, 1, 0).Add(-time.Nanosecond)
+		}
+	case UnitWeek:
+		daysSinceMonday := int(t.Weekday() - time.Monday)
+		if daysSinceMonday < 0 {
+			daysSinceMonday += 7
+		}
+		t = time.Date(t.Year(), t.Month(), t.Day()-daysSinceMonday, 0, 0, 0, 0, t.Location())
+		if !isAgo {
+			t = t.AddDate(0, 0, 7).Add(-time.Nanosecond)
+		}
+	case UnitDay:
+		t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+		if !isAgo {
+			t = t.AddDate(0, 0, 1).Add(-time.Nanosecond)
+		}
+	case UnitHour:
+		t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+		if !isAgo {
+			t = t.Add(time.Hour).Add(-time.Nanosecond)
+		}
+	case UnitMinute:
+		t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), 0, 0, t.Location())
+		if !isAgo {
+			t = t.Add(time.Minute).Add(-time.Nanosecond)
+		}
+	case UnitSecond:
+		t = time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, t.Location())
+		if !isAgo {
+			t = t.Add(time.Second).Add(-time.Nanosecond)
+		}
+	case UnitNanosecond:
+		// no rounding needed
+	}
+	return t
+}
+
+//
+// Tag Parsing
+//
 
 func parseRoundConfig(roundTag string) *roundConfig {
 	roundTag = strings.ToLower(roundTag)
@@ -310,6 +716,41 @@ func parseRoundConfig(roundTag string) *roundConfig {
 	return nil // ignore invalid units
 }
 
+func parseRelativeRoundConfig(relativeRoundTag string) RelativeRoundMode {
+	relativeRoundTag = strings.ToLower(strings.TrimSpace(relativeRoundTag))
+
+	switch relativeRoundTag {
+	case "up":
+		return RelativeRoundUp
+	case "down":
+		return RelativeRoundDown
+	case "none":
+		return RelativeRoundNone
+	case "auto":
+		return RelativeRoundAuto
+	default:
+		// Default to auto for invalid values
+		return RelativeRoundAuto
+	}
+}
+
+func normalizeDayName(dayName string) (DayName, bool) {
+	if dayName == "" {
+		return "", false
+	}
+
+	dayName = strings.ToLower(strings.TrimSpace(dayName))
+	if weekday, ok := dayNameToWeekday[dayName]; ok {
+		// Return the full day name for consistency
+		return dayNames[weekday], true
+	}
+	return "", false
+}
+
+//
+// Rounding Methods - Simplified
+//
+
 func (t *Time) applyRounding(opts *TimeOptions) {
 	if opts.Round == nil {
 		return
@@ -325,181 +766,6 @@ func (t *Time) applyRounding(opts *TimeOptions) {
 	}
 }
 
-// TimeComponent represents the components of a time that can be rounded
-type timeComponent struct {
-	year, month, day, hour, minute, second, nanosecond int
-}
-
-// getTimeComponents extracts the current time components
-func (t *Time) getTimeComponents() timeComponent {
-	return timeComponent{
-		year:       t.Val.Year(),
-		month:      int(t.Val.Month()),
-		day:        t.Val.Day(),
-		hour:       t.Val.Hour(),
-		minute:     t.Val.Minute(),
-		second:     t.Val.Second(),
-		nanosecond: t.Val.Nanosecond(),
-	}
-}
-
-// createTimeFromComponents creates a time.Time from components
-func (t *Time) createTimeFromComponents(comp timeComponent) time.Time {
-	return time.Date(comp.year, time.Month(comp.month), comp.day,
-		comp.hour, comp.minute, comp.second, comp.nanosecond, t.Val.Location())
-}
-
-// zeroComponentsBelow sets all time components below the specified unit to zero
-func (comp *timeComponent) zeroComponentsBelow(unit RoundingUnit) {
-	switch unit {
-	case UnitYear:
-		comp.month, comp.day, comp.hour, comp.minute, comp.second, comp.nanosecond = 1, 1, 0, 0, 0, 0
-	case UnitMonth:
-		comp.day, comp.hour, comp.minute, comp.second, comp.nanosecond = 1, 0, 0, 0, 0
-	case UnitDay:
-		comp.hour, comp.minute, comp.second, comp.nanosecond = 0, 0, 0, 0
-	case UnitHour:
-		comp.minute, comp.second, comp.nanosecond = 0, 0, 0
-	case UnitMinute:
-		comp.second, comp.nanosecond = 0, 0
-	case UnitSecond:
-		comp.nanosecond = 0
-	}
-}
-
-// roundStandardUnit handles rounding for standard time units
-func (t *Time) roundStandardUnit(unit RoundingUnit, direction RoundingDirection) timeComponent {
-	comp := t.getTimeComponents()
-	unitStr := string(unit)
-
-	switch unit {
-	case UnitYear:
-		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
-			comp.year++
-		}
-		comp.zeroComponentsBelow(unit)
-
-	case UnitMonth:
-		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
-			nextMonth := t.Val.AddDate(0, 1, 0)
-			comp.year, comp.month = nextMonth.Year(), int(nextMonth.Month())
-		}
-		comp.zeroComponentsBelow(unit)
-
-	case UnitDay:
-		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
-			comp.day++
-		}
-		comp.zeroComponentsBelow(unit)
-
-	case UnitHour:
-		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
-			comp.hour++
-		}
-		comp.zeroComponentsBelow(unit)
-
-	case UnitMinute:
-		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
-			comp.minute++
-		}
-		comp.zeroComponentsBelow(unit)
-
-	case UnitSecond:
-		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
-			comp.second++
-		}
-		comp.zeroComponentsBelow(unit)
-
-	case UnitNanosecond:
-		// nanosecond is the smallest unit, no rounding needed
-		return comp
-	}
-
-	return comp
-}
-
-// roundComponents calculates the rounded components for a given unit and direction
-func (t *Time) roundComponents(unit RoundingUnit, direction RoundingDirection) timeComponent {
-	switch unit {
-	case UnitYear, UnitMonth, UnitDay, UnitHour, UnitMinute, UnitSecond, UnitNanosecond:
-		return t.roundStandardUnit(unit, direction)
-	case UnitWeek:
-		// Handle week rounding separately as it's more complex
-		return t.getTimeComponents()
-	default:
-		return t.getTimeComponents()
-	}
-}
-
-// Helper function to check if time components are zero from a given level down
-func (t *Time) isZeroFrom(level string) bool {
-	switch level {
-	case "hour":
-		return t.Val.Hour() == 0 && t.Val.Minute() == 0 && t.Val.Second() == 0 && t.Val.Nanosecond() == 0
-	case "minute":
-		return t.Val.Minute() == 0 && t.Val.Second() == 0 && t.Val.Nanosecond() == 0
-	case "second":
-		return t.Val.Second() == 0 && t.Val.Nanosecond() == 0
-	case "nanosecond":
-		return t.Val.Nanosecond() == 0
-	default:
-		return false
-	}
-}
-
-// isAtStandardBoundary checks if time is at a boundary for standard units
-func (t *Time) isAtStandardBoundary(unit string) bool {
-	switch unit {
-	case "year":
-		return t.Val.YearDay() == 1 && t.isZeroFrom("hour")
-	case "month":
-		return t.Val.Day() == 1 && t.isZeroFrom("hour")
-	case "day":
-		return t.isZeroFrom("hour")
-	case "hour":
-		return t.isZeroFrom("minute")
-	case "minute":
-		return t.isZeroFrom("second")
-	case "second":
-		return t.isZeroFrom("nanosecond")
-	default:
-		return false
-	}
-}
-
-// isAtDayNameBoundary checks if time is at a boundary for day names
-func (t *Time) isAtDayNameBoundary(unit string) bool {
-	weekday, ok := dayNameToWeekday[unit]
-	if !ok {
-		return false
-	}
-	down := t.roundDownToWeekday(weekday)
-	return t.Val.Equal(down)
-}
-
-// Helper function to check if time is already at a boundary
-func (t *Time) isAtBoundary(unit string) bool {
-	if t.isAtStandardBoundary(unit) {
-		return true
-	}
-	return t.isAtDayNameBoundary(unit)
-}
-
-// Helper function to round down to a specific weekday
-func (t *Time) roundDownToWeekday(targetDay time.Weekday) time.Time {
-	daysSinceStart := int(t.Val.Weekday() - targetDay)
-	if daysSinceStart < 0 {
-		daysSinceStart += DaysInWeek
-	}
-	comp := timeComponent{
-		year:  t.Val.Year(),
-		month: int(t.Val.Month()),
-		day:   t.Val.Day() - daysSinceStart,
-		hour:  0, minute: 0, second: 0, nanosecond: 0,
-	}
-	return t.createTimeFromComponents(comp)
-}
-
 func (t *Time) roundDown(unit RoundingUnit) time.Time {
 	switch unit {
 	case UnitYear, UnitMonth, UnitDay, UnitHour, UnitMinute, UnitSecond, UnitNanosecond:
@@ -511,61 +777,16 @@ func (t *Time) roundDown(unit RoundingUnit) time.Time {
 	}
 }
 
-// roundStandardDown handles rounding down for standard units
-func (t *Time) roundStandardDown(unit RoundingUnit) time.Time {
-	comp := t.roundComponents(unit, DirectionDown)
-	if unit == UnitNanosecond {
-		return t.Val.Truncate(time.Nanosecond)
-	}
-	return t.createTimeFromComponents(comp)
-}
-
-// roundDayNameDown handles rounding down for day names
-func (t *Time) roundDayNameDown(unit RoundingUnit) time.Time {
-	unitStr := string(unit)
-	if weekday, ok := dayNameToWeekday[unitStr]; ok {
-		return t.roundDownToWeekday(weekday)
-	}
-	return t.Val
-}
-
 func (t *Time) roundUp(unit RoundingUnit) time.Time {
 	switch unit {
 	case UnitYear, UnitMonth, UnitDay, UnitHour, UnitMinute, UnitSecond, UnitNanosecond:
 		return t.roundStandardUp(unit)
 	case UnitWeek:
 		down := t.roundDownToWeekday(time.Monday)
-		return down.AddDate(0, 0, DaysInWeek)
+		return down.AddDate(0, 0, 7)
 	default:
 		return t.roundDayNameUp(unit)
 	}
-}
-
-// roundStandardUp handles rounding up for standard units
-func (t *Time) roundStandardUp(unit RoundingUnit) time.Time {
-	unitStr := string(unit)
-	if t.isAtBoundary(unitStr) {
-		return t.Val
-	}
-
-	comp := t.roundComponents(unit, DirectionUp)
-	if unit == UnitNanosecond {
-		return t.Val // nanosecond is the smallest unit
-	}
-	return t.createTimeFromComponents(comp)
-}
-
-// roundDayNameUp handles rounding up for day names
-func (t *Time) roundDayNameUp(unit RoundingUnit) time.Time {
-	unitStr := string(unit)
-	if weekday, ok := dayNameToWeekday[unitStr]; ok {
-		down := t.roundDownToWeekday(weekday)
-		if t.Val.Equal(down) {
-			return down
-		}
-		return down.AddDate(0, 0, DaysInWeek)
-	}
-	return t.Val
 }
 
 func (t *Time) roundNearest(unit RoundingUnit) time.Time {
@@ -586,38 +807,139 @@ func (t *Time) roundNearest(unit RoundingUnit) time.Time {
 	return up
 }
 
-// handleZeroTimeValue processes zero time values according to options
-func (t *Time) handleZeroTimeValue(opts *TimeOptions) Errorable {
-	if opts.Null {
-		t.Present = true
-		t.Null = true
-		return nil
+//
+// Standard Rounding Methods - Simplified
+//
+
+func (t *Time) roundStandardDown(unit RoundingUnit) time.Time {
+	comp := t.roundComponents(unit, DirectionDown)
+	if unit == UnitNanosecond {
+		return t.Val.Truncate(time.Nanosecond)
 	}
-	if opts.Required {
-		return ErrBlank
-	}
-	if !opts.DiscardBlank {
-		t.Present = true
-		return ErrBlank
-	}
-	return nil
+	return t.createTimeFromComponents(comp)
 }
 
-// handleNonZeroTimeValue processes non-zero time values
-func (t *Time) handleNonZeroTimeValue(value time.Time, opts *TimeOptions) Errorable {
-	t.Present = true
-	t.Val = value
-	t.applyRounding(opts)
-	return t.assertTimeRange(opts)
+func (t *Time) roundStandardUp(unit RoundingUnit) time.Time {
+	unitStr := string(unit)
+	if t.isAtBoundary(unitStr) {
+		return t.Val
+	}
+
+	comp := t.roundComponents(unit, DirectionUp)
+	if unit == UnitNanosecond {
+		return t.Val // nanosecond is the smallest unit
+	}
+	return t.createTimeFromComponents(comp)
 }
 
-// parseExclusivePrefix extracts the exclusive prefix and returns the cleaned value
-func parseExclusivePrefix(raw string) (string, bool) {
-	if strings.HasPrefix(raw, "!") {
-		return strings.TrimPrefix(raw, "!"), true
+func (t *Time) roundComponents(unit RoundingUnit, direction RoundingDirection) timeComponent {
+	switch unit {
+	case UnitYear, UnitMonth, UnitDay, UnitHour, UnitMinute, UnitSecond, UnitNanosecond:
+		return t.roundStandardUnit(unit, direction)
+	case UnitWeek:
+		// Handle week rounding separately as it's more complex
+		return t.getTimeComponents()
+	default:
+		return t.getTimeComponents()
 	}
-	return raw, false
 }
+
+func (t *Time) roundStandardUnit(unit RoundingUnit, direction RoundingDirection) timeComponent {
+	comp := t.getTimeComponents()
+	unitStr := string(unit)
+
+	if config, exists := standardRoundingConfigs[unit]; exists {
+		if direction == DirectionUp && !t.isAtBoundary(unitStr) {
+			comp = config.upFunc(comp)
+		}
+		config.zeroFunc(&comp)
+	}
+
+	return comp
+}
+
+//
+// Day Name Rounding Methods
+//
+
+func (t *Time) roundDayNameDown(unit RoundingUnit) time.Time {
+	unitStr := string(unit)
+	if weekday, ok := dayNameToWeekday[unitStr]; ok {
+		return t.roundDownToWeekday(weekday)
+	}
+	return t.Val
+}
+
+func (t *Time) roundDayNameUp(unit RoundingUnit) time.Time {
+	unitStr := string(unit)
+	if weekday, ok := dayNameToWeekday[unitStr]; ok {
+		down := t.roundDownToWeekday(weekday)
+		if t.Val.Equal(down) {
+			return down
+		}
+		return down.AddDate(0, 0, 7)
+	}
+	return t.Val
+}
+
+func (t *Time) roundDownToWeekday(targetDay time.Weekday) time.Time {
+	daysSinceStart := int(t.Val.Weekday() - targetDay)
+	if daysSinceStart < 0 {
+		daysSinceStart += 7
+	}
+	comp := timeComponent{
+		year:  t.Val.Year(),
+		month: int(t.Val.Month()),
+		day:   t.Val.Day() - daysSinceStart,
+		hour:  0, minute: 0, second: 0, nanosecond: 0,
+	}
+	return t.createTimeFromComponents(comp)
+}
+
+//
+// Time Component Methods
+//
+
+func (t *Time) getTimeComponents() timeComponent {
+	return timeComponent{
+		year:       t.Val.Year(),
+		month:      int(t.Val.Month()),
+		day:        t.Val.Day(),
+		hour:       t.Val.Hour(),
+		minute:     t.Val.Minute(),
+		second:     t.Val.Second(),
+		nanosecond: t.Val.Nanosecond(),
+	}
+}
+
+func (t *Time) createTimeFromComponents(comp timeComponent) time.Time {
+	return time.Date(comp.year, time.Month(comp.month), comp.day,
+		comp.hour, comp.minute, comp.second, comp.nanosecond, t.Val.Location())
+}
+
+//
+// Boundary Checking Methods - Simplified
+//
+
+func (t *Time) isAtBoundary(unit string) bool {
+	if check, exists := boundaryChecks[unit]; exists {
+		return check(t.Val)
+	}
+	return t.isAtDayNameBoundary(unit)
+}
+
+func (t *Time) isAtDayNameBoundary(unit string) bool {
+	weekday, ok := dayNameToWeekday[unit]
+	if !ok {
+		return false
+	}
+	down := t.roundDownToWeekday(weekday)
+	return t.Val.Equal(down)
+}
+
+//
+// Date Limit Methods
+//
 
 func newDateLimit(raw string, opts *TimeOptions) *dateLimit {
 	if raw == "" {
@@ -627,7 +949,7 @@ func newDateLimit(raw string, opts *TimeOptions) *dateLimit {
 	value, exclusive := parseExclusivePrefix(raw)
 
 	// Always try to resolve expressions for min/max dates
-	if v := resolveTimeExpression(value); v != nil {
+	if v := resolveTimeExpression(value, RelativeRoundAuto); v != nil {
 		return &dateLimit{raw: value, exclusive: exclusive}
 	}
 
@@ -642,7 +964,7 @@ func newDateLimit(raw string, opts *TimeOptions) *dateLimit {
 func (d *dateLimit) Value(opts *TimeOptions) time.Time {
 	if d.isAbsolute {
 		return d.value
-	} else if v := resolveTimeExpression(d.raw); v != nil {
+	} else if v := resolveTimeExpression(d.raw, RelativeRoundAuto); v != nil {
 		// Apply the same rounding to expression-based boundaries
 		if opts.Round != nil {
 			tempTime := Time{Val: *v}
@@ -655,45 +977,16 @@ func (d *dateLimit) Value(opts *TimeOptions) time.Time {
 	return time.Now()
 }
 
-const (
-	// DaysInWeek represents the number of days in a week
-	DaysInWeek = 7
-
-	// TimeComparisonTolerance allows for some tolerance in time comparisons
-	// to handle time expression resolution differences
-	TimeComparisonTolerance = time.Millisecond * 250 // 1/4 second
-
-	// HoursInDay represents the number of hours in a day
-	HoursInDay = 24
-)
-
-// validateExclusiveBoundary handles exclusive boundary validation
-func (t *Time) validateExclusiveBoundary(boundaryTime time.Time, isMin bool) bool {
-	if isMin {
-		// Exclusive min: value must be strictly after boundary
-		return t.Val.After(boundaryTime.Add(TimeComparisonTolerance))
+func parseExclusivePrefix(raw string) (string, bool) {
+	if strings.HasPrefix(raw, "!") {
+		return strings.TrimPrefix(raw, "!"), true
 	}
-	// Exclusive max: value must be strictly before boundary
-	return t.Val.Before(boundaryTime.Add(-TimeComparisonTolerance))
+	return raw, false
 }
 
-// validateInclusiveBoundary handles inclusive boundary validation
-func (t *Time) validateInclusiveBoundary(boundaryTime time.Time, isMin bool) bool {
-	if isMin {
-		// Inclusive min: value must be greater than or equal to boundary
-		return !t.Val.Before(boundaryTime.Add(-TimeComparisonTolerance))
-	}
-	// Inclusive max: value must be less than or equal to boundary
-	return !t.Val.After(boundaryTime.Add(TimeComparisonTolerance))
-}
-
-// validateTimeBoundary checks if a time value is within the specified boundary
-func (t *Time) validateTimeBoundary(boundaryTime time.Time, exclusive bool, isMin bool) bool {
-	if exclusive {
-		return t.validateExclusiveBoundary(boundaryTime, isMin)
-	}
-	return t.validateInclusiveBoundary(boundaryTime, isMin)
-}
+//
+// Range Validation Methods - Simplified
+//
 
 func (t *Time) assertTimeRange(opts *TimeOptions) Errorable {
 	if opts.MinDate != nil {
@@ -711,165 +1004,27 @@ func (t *Time) assertTimeRange(opts *TimeOptions) Errorable {
 	return nil
 }
 
-func resolveTimeExpression(value string) *time.Time {
-	for _, parser := range timeExpressionParsers {
-		submatches := parser.Regexp.FindStringSubmatch(value)
-		if len(submatches) == 0 {
-			continue
-		}
-		if v, ok := parser.Parse(submatches); ok {
-			return &v
-		}
+func (t *Time) validateTimeBoundary(boundaryTime time.Time, exclusive bool, isMin bool) bool {
+	if exclusive {
+		return t.validateExclusiveBoundary(boundaryTime, isMin)
 	}
-	return nil
+	return t.validateInclusiveBoundary(boundaryTime, isMin)
 }
 
-type expressionParser struct {
-	*regexp.Regexp
-	Parse func([]string) (time.Time, bool)
+func (t *Time) validateExclusiveBoundary(boundaryTime time.Time, isMin bool) bool {
+	if isMin {
+		// Exclusive min: value must be strictly after boundary
+		return t.Val.After(boundaryTime.Add(TimeComparisonTolerance))
+	}
+	// Exclusive max: value must be strictly before boundary
+	return t.Val.Before(boundaryTime.Add(-TimeComparisonTolerance))
 }
 
-// TimeUnit represents a time unit for expressions
-type TimeUnit string
-
-const (
-	ExprUnitYear       TimeUnit = "year"
-	ExprUnitMonth      TimeUnit = "month"
-	ExprUnitWeek       TimeUnit = "week"
-	ExprUnitDay        TimeUnit = "day"
-	ExprUnitHour       TimeUnit = "hour"
-	ExprUnitMinute     TimeUnit = "minute"
-	ExprUnitSecond     TimeUnit = "second"
-	ExprUnitNanosecond TimeUnit = "nanosecond"
-)
-
-// timeUnitDuration maps time unit strings to their corresponding durations
-var timeUnitDuration = map[TimeUnit]time.Duration{
-	ExprUnitHour:       time.Hour,
-	ExprUnitMinute:     time.Minute,
-	ExprUnitSecond:     time.Second,
-	ExprUnitNanosecond: time.Nanosecond,
-}
-
-// timeUnitAddDate maps time unit strings to their AddDate parameters
-var timeUnitAddDate = map[TimeUnit]func(int) (int, int, int){
-	ExprUnitYear:  func(delta int) (int, int, int) { return delta, 0, 0 },
-	ExprUnitMonth: func(delta int) (int, int, int) { return 0, delta, 0 },
-	ExprUnitWeek:  func(delta int) (int, int, int) { return 0, 0, delta * DaysInWeek },
-	ExprUnitDay:   func(delta int) (int, int, int) { return 0, 0, delta },
-}
-
-// parseRelativeTimeExpression handles expressions like "5_days_ago" or "2_hours_from_now"
-func parseRelativeTimeExpression(matches []string) (time.Time, bool) {
-	delta, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return time.Time{}, false
+func (t *Time) validateInclusiveBoundary(boundaryTime time.Time, isMin bool) bool {
+	if isMin {
+		// Inclusive min: value must be greater than or equal to boundary
+		return !t.Val.Before(boundaryTime.Add(-TimeComparisonTolerance))
 	}
-	if matches[3] == "ago" {
-		delta = -delta
-	}
-
-	unit := TimeUnit(matches[2])
-
-	// Handle AddDate units (year, month, week, day)
-	if addDateFunc, exists := timeUnitAddDate[unit]; exists {
-		years, months, days := addDateFunc(delta)
-		return time.Now().AddDate(years, months, days), true
-	}
-
-	// Handle Duration units (hour, minute, second, nanosecond)
-	if duration, exists := timeUnitDuration[unit]; exists {
-		return time.Now().Add(time.Duration(delta) * duration), true
-	}
-
-	return time.Time{}, false
-}
-
-// parseAbsoluteTimeExpression handles expressions like "now", "today", "yesterday", "tomorrow"
-func parseAbsoluteTimeExpression(matches []string) (time.Time, bool) {
-	base := time.Now().Truncate(HoursInDay * time.Hour)
-	switch matches[1] {
-	case "now":
-		return time.Now(), true
-	case "today":
-		return base, true
-	case "yesterday":
-		return base.AddDate(0, 0, -1), true
-	case "tomorrow":
-		return base.AddDate(0, 0, 1), true
-	}
-	return time.Time{}, false
-}
-
-// Pre-compile regex patterns for better performance
-var (
-	relativeTimeRegex = regexp.MustCompile(`^(\d+)_(year|month|week|day|hour|minute|second|nanosecond)s?_(ago|from_now)$`)
-	absoluteTimeRegex = regexp.MustCompile(`^(now|today|yesterday|tomorrow)$`)
-)
-
-var timeExpressionParsers = []expressionParser{
-	{
-		Regexp: relativeTimeRegex,
-		Parse:  parseRelativeTimeExpression,
-	},
-	{
-		Regexp: absoluteTimeRegex,
-		Parse:  parseAbsoluteTimeExpression,
-	},
-}
-
-// handleEmptyValue processes empty values according to the options
-func (t *Time) handleEmptyValue(opts *TimeOptions) Errorable {
-	if opts.Null {
-		t.Present = true
-		t.Null = true
-		return nil
-	}
-	if opts.Required {
-		return ErrBlank
-	}
-	if !opts.DiscardBlank {
-		t.Present = true
-		return ErrBlank
-	}
-	return nil
-}
-
-// parseTimeExpression handles expression-based time parsing
-func (t *Time) parseTimeExpression(value string, opts *TimeOptions) bool {
-	if v := resolveTimeExpression(value); v != nil {
-		t.Val = *v
-		t.Present = true
-		t.applyRounding(opts)
-		return true
-	}
-	return false
-}
-
-// parseTimeFormat handles format-based time parsing
-func (t *Time) parseTimeFormat(value string, format string, opts *TimeOptions) bool {
-	if v, err := time.Parse(format, value); err == nil {
-		t.Val = v
-		t.Present = true
-		t.applyRounding(opts)
-		return true
-	}
-	return false
-}
-
-// parseTimeValue attempts to parse a time value using the given formats
-func (t *Time) parseTimeValue(value string, opts *TimeOptions) Errorable {
-	for _, format := range opts.Format {
-		switch format {
-		case "expression":
-			if t.parseTimeExpression(value, opts) {
-				return t.assertTimeRange(opts)
-			}
-		default:
-			if t.parseTimeFormat(value, format, opts) {
-				return t.assertTimeRange(opts)
-			}
-		}
-	}
-	return ErrTime
+	// Inclusive max: value must be less than or equal to boundary
+	return !t.Val.After(boundaryTime.Add(TimeComparisonTolerance))
 }

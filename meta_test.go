@@ -9,9 +9,17 @@ import (
 	"testing"
 )
 
-func assert(t *testing.T, this bool) {
+func assert(t *testing.T, this bool, msgAndArgs ...interface{}) {
 	if !this {
-		t.Errorf("Expected true but was false")
+		msg := "Expected true but was false"
+		if len(msgAndArgs) > 0 {
+			msg += "\n" + fmt.Sprintf("%v", msgAndArgs[0])
+		}
+		if len(msgAndArgs) > 1 {
+			t.Errorf(msg, msgAndArgs[1:]...)
+		} else {
+			t.Error(msg)
+		}
 	}
 }
 
